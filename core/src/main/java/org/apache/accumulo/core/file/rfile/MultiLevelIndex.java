@@ -28,6 +28,7 @@ import java.io.DataOutput;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
+import java.io.UncheckedIOException;
 import java.util.AbstractList;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -52,7 +53,7 @@ public class MultiLevelIndex {
     private long offset;
     private long compressedSize;
     private long rawSize;
-    private boolean newFormat;
+    private final boolean newFormat;
 
     IndexEntry(Key k, int e, long offset, long compressedSize, long rawSize) {
       this.key = k;
@@ -139,8 +140,8 @@ public class MultiLevelIndex {
     protected int[] offsets;
     protected byte[] data;
 
-    protected SeekableByteArrayInputStream sbais;
-    protected DataInputStream dis;
+    protected final SeekableByteArrayInputStream sbais;
+    protected final DataInputStream dis;
     protected int offsetsOffset;
     protected int indexOffset;
     protected int numOffsets;
@@ -190,7 +191,7 @@ public class MultiLevelIndex {
         sbais.seek(indexOffset + offset);
         return newValue();
       } catch (IOException ioe) {
-        throw new RuntimeException(ioe);
+        throw new UncheckedIOException(ioe);
       }
     }
 
@@ -208,7 +209,7 @@ public class MultiLevelIndex {
   // a list that deserializes index entries on demand
   private static class SerializedIndex extends SerializedIndexBase<IndexEntry> {
 
-    private boolean newFormat;
+    private final boolean newFormat;
 
     SerializedIndex(int[] offsets, byte[] data, boolean newFormat) {
       super(offsets, data);
@@ -399,7 +400,7 @@ public class MultiLevelIndex {
         offsetsArray = offsets;
         newFormat = false;
       } else {
-        throw new RuntimeException("Unexpected version " + version);
+        throw new IllegalStateException("Unexpected version " + version);
       }
 
     }
@@ -451,7 +452,7 @@ public class MultiLevelIndex {
    */
   public static class BufferedWriter {
 
-    private Writer writer;
+    private final Writer writer;
     private DataOutputStream buffer;
     private int buffered;
     private ByteArrayOutputStream baos;
@@ -503,15 +504,15 @@ public class MultiLevelIndex {
   }
 
   public static class Writer {
-    private int threshold;
+    private final int threshold;
 
-    private ArrayList<IndexBlock> levels;
+    private final ArrayList<IndexBlock> levels;
 
     private int totalAdded;
 
     private boolean addedLast = false;
 
-    private BCFile.Writer blockFileWriter;
+    private final BCFile.Writer blockFileWriter;
 
     Writer(BCFile.Writer blockFileWriter, int maxBlockSize) {
       this.blockFileWriter = blockFileWriter;
@@ -592,14 +593,14 @@ public class MultiLevelIndex {
 
   public static class Reader {
     private IndexBlock rootBlock;
-    private CachableBlockFile.Reader blockStore;
-    private int version;
+    private final CachableBlockFile.Reader blockStore;
+    private final int version;
     private int size;
 
     public class Node {
 
-      private Node parent;
-      private IndexBlock indexBlock;
+      private final Node parent;
+      private final IndexBlock indexBlock;
       private int currentPos;
 
       Node(Node parent, IndexBlock iBlock) {
@@ -705,7 +706,7 @@ public class MultiLevelIndex {
         try {
           return node.getPreviousNode();
         } catch (IOException e) {
-          throw new RuntimeException(e);
+          throw new UncheckedIOException(e);
         }
       }
 
@@ -713,7 +714,7 @@ public class MultiLevelIndex {
         try {
           return node.getNextNode();
         } catch (IOException e) {
-          throw new RuntimeException(e);
+          throw new UncheckedIOException(e);
         }
       }
 

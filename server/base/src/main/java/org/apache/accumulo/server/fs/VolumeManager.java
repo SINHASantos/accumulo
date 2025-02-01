@@ -20,6 +20,7 @@ package org.apache.accumulo.server.fs;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.net.UnknownHostException;
 import java.util.Collection;
 import java.util.Map;
@@ -27,6 +28,7 @@ import java.util.Set;
 
 import org.apache.accumulo.core.Constants;
 import org.apache.accumulo.core.data.InstanceId;
+import org.apache.accumulo.core.fate.FateId;
 import org.apache.accumulo.core.volume.Volume;
 import org.apache.accumulo.core.volume.VolumeConfiguration;
 import org.apache.hadoop.conf.Configuration;
@@ -51,7 +53,7 @@ public interface VolumeManager extends AutoCloseable {
   enum FileType {
     TABLE(Constants.TABLE_DIR), WAL(Constants.WAL_DIR), RECOVERY(Constants.RECOVERY_DIR);
 
-    private String dir;
+    private final String dir;
 
     FileType(String dir) {
       this.dir = dir;
@@ -166,8 +168,8 @@ public interface VolumeManager extends AutoCloseable {
    * This operation should be idempotent to allow calling multiple times in the case of a partial
    * completion.
    */
-  void bulkRename(Map<Path,Path> oldToNewPathMap, int poolSize, String poolName,
-      String transactionId) throws IOException;
+  void bulkRename(Map<Path,Path> oldToNewPathMap, int poolSize, String poolName, FateId fateId)
+      throws IOException;
 
   // forward to the appropriate FileSystem object
   boolean moveToTrash(Path sourcePath) throws IOException;
@@ -218,18 +220,18 @@ public interface VolumeManager extends AutoCloseable {
       log.debug("Trying to read instance id from {}", instanceDirectory);
       if (files == null || files.length == 0) {
         log.error("unable to obtain instance id at {}", instanceDirectory);
-        throw new RuntimeException(
+        throw new IllegalStateException(
             "Accumulo not initialized, there is no instance id at " + instanceDirectory);
       } else if (files.length != 1) {
         log.error("multiple potential instances in {}", instanceDirectory);
-        throw new RuntimeException(
+        throw new IllegalStateException(
             "Accumulo found multiple possible instance ids in " + instanceDirectory);
       } else {
         return InstanceId.of(files[0].getPath().getName());
       }
     } catch (IOException e) {
       log.error("Problem reading instance id out of hdfs at " + instanceDirectory, e);
-      throw new RuntimeException(
+      throw new UncheckedIOException(
           "Can't tell if Accumulo is initialized; can't read instance id at " + instanceDirectory,
           e);
     } catch (IllegalArgumentException exception) {

@@ -31,7 +31,6 @@ import java.util.Set;
 import java.util.SortedSet;
 
 import org.apache.accumulo.core.classloader.ClassLoaderUtil;
-import org.apache.accumulo.core.client.AccumuloSecurityException;
 import org.apache.accumulo.core.client.NamespaceNotFoundException;
 import org.apache.accumulo.core.client.TableNotFoundException;
 import org.apache.accumulo.core.client.security.tokens.AuthenticationToken;
@@ -54,8 +53,6 @@ import org.apache.accumulo.core.conf.AccumuloConfiguration;
 import org.apache.accumulo.core.conf.Property;
 import org.apache.accumulo.core.data.NamespaceId;
 import org.apache.accumulo.core.data.TableId;
-import org.apache.accumulo.core.master.thrift.BulkImportState;
-import org.apache.accumulo.core.master.thrift.BulkImportStatus;
 import org.apache.accumulo.core.security.Authorizations;
 import org.apache.accumulo.core.security.NamespacePermission;
 import org.apache.accumulo.core.security.SystemPermission;
@@ -66,23 +63,18 @@ import org.apache.accumulo.server.conf.store.NamespacePropKey;
 import org.apache.accumulo.server.conf.store.SystemPropKey;
 import org.apache.accumulo.server.conf.store.TablePropKey;
 import org.apache.accumulo.server.security.SecurityOperation;
-import org.apache.accumulo.server.util.ServerBulkImportStatus;
 import org.apache.accumulo.server.util.TableDiskUsage;
-import org.apache.accumulo.server.zookeeper.TransactionWatcher;
 import org.apache.thrift.TException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class ClientServiceHandler implements ClientService.Iface {
   private static final Logger log = LoggerFactory.getLogger(ClientServiceHandler.class);
-  protected final TransactionWatcher transactionWatcher;
   protected final ServerContext context;
   protected final SecurityOperation security;
-  private final ServerBulkImportStatus bulkImportStatus = new ServerBulkImportStatus();
 
-  public ClientServiceHandler(ServerContext context, TransactionWatcher transactionWatcher) {
+  public ClientServiceHandler(ServerContext context) {
     this.context = context;
-    this.transactionWatcher = transactionWatcher;
     this.security = context.getSecurityOperation();
   }
 
@@ -116,24 +108,9 @@ public class ClientServiceHandler implements ClientService.Iface {
   }
 
   @Override
-  public String getInstanceId() {
-    return context.getInstanceID().canonical();
-  }
-
-  @Override
-  public String getRootTabletLocation() {
-    return context.getRootTabletLocation();
-  }
-
-  @Override
-  public String getZooKeepers() {
-    return context.getZooKeepers();
-  }
-
-  @Override
   public void ping(TCredentials credentials) {
     // anybody can call this; no authentication check
-    log.info("Manager reports: I just got pinged!");
+    log.info("I just got pinged!");
   }
 
   @Override
@@ -216,12 +193,11 @@ public class ClientServiceHandler implements ClientService.Iface {
     NamespaceId namespaceId;
     try {
       namespaceId = context.getNamespaceId(tableId);
+      security.grantTablePermission(credentials, user, tableId, tableName,
+          TablePermission.getPermissionById(permission), namespaceId);
     } catch (TableNotFoundException e) {
       throw new TException(e);
     }
-
-    security.grantTablePermission(credentials, user, tableId,
-        TablePermission.getPermissionById(permission), namespaceId);
   }
 
   @Override
@@ -357,7 +333,7 @@ public class ClientServiceHandler implements ClientService.Iface {
       case DEFAULT:
         return conf(credentials, context.getDefaultConfiguration());
     }
-    throw new RuntimeException("Unexpected configuration type " + type);
+    throw new IllegalArgumentException("Unexpected configuration type " + type);
   }
 
   @Override
@@ -372,7 +348,8 @@ public class ClientServiceHandler implements ClientService.Iface {
       throws ThriftSecurityException {
     checkSystemPermission(credentials);
     return Optional.of(context.getPropStore().get(SystemPropKey.of(context)))
-        .map(vProps -> new TVersionedProperties(vProps.getDataVersion(), vProps.asMap())).get();
+        .map(vProps -> new TVersionedProperties(vProps.getDataVersion(), vProps.asMap()))
+        .orElseThrow();
   }
 
   @Override
@@ -399,37 +376,8 @@ public class ClientServiceHandler implements ClientService.Iface {
     final TableId tableId = checkTableId(context, tableName, null);
     checkTablePermission(credentials, tableId, TablePermission.ALTER_TABLE);
     return Optional.of(context.getPropStore().get(TablePropKey.of(context, tableId)))
-        .map(vProps -> new TVersionedProperties(vProps.getDataVersion(), vProps.asMap())).get();
-  }
-
-  @Override
-  public List<String> bulkImportFiles(TInfo tinfo, final TCredentials credentials, final long tid,
-      final String tableId, final List<String> files, final String errorDir, final boolean setTime)
-      throws ThriftSecurityException, ThriftTableOperationException, TException {
-    try {
-      if (!security.canPerformSystemActions(credentials)) {
-        throw new AccumuloSecurityException(credentials.getPrincipal(),
-            SecurityErrorCode.PERMISSION_DENIED);
-      }
-      bulkImportStatus.updateBulkImportStatus(files, BulkImportState.INITIAL);
-      log.debug("Got request to bulk import files to table({}): {}", tableId, files);
-
-      bulkImportStatus.updateBulkImportStatus(files, BulkImportState.PROCESSING);
-      try {
-        return BulkImporter.bulkLoad(context, tid, tableId, files, setTime);
-      } finally {
-        bulkImportStatus.removeBulkImportStatus(files);
-      }
-    } catch (AccumuloSecurityException e) {
-      throw e.asThriftException();
-    } catch (Exception ex) {
-      throw new TException(ex);
-    }
-  }
-
-  @Override
-  public boolean isActive(TInfo tinfo, long tid) {
-    return transactionWatcher.isActive(tid);
+        .map(vProps -> new TVersionedProperties(vProps.getDataVersion(), vProps.asMap()))
+        .orElseThrow();
   }
 
   @Override
@@ -570,16 +518,12 @@ public class ClientServiceHandler implements ClientService.Iface {
       namespaceId = Namespaces.getNamespaceId(context, ns);
       checkNamespacePermission(credentials, namespaceId, NamespacePermission.ALTER_NAMESPACE);
       return Optional.of(context.getPropStore().get(NamespacePropKey.of(context, namespaceId)))
-          .map(vProps -> new TVersionedProperties(vProps.getDataVersion(), vProps.asMap())).get();
+          .map(vProps -> new TVersionedProperties(vProps.getDataVersion(), vProps.asMap()))
+          .orElseThrow();
     } catch (NamespaceNotFoundException e) {
       String why = "Could not find namespace while getting configuration.";
       throw new ThriftTableOperationException(null, ns, null,
           TableOperationExceptionType.NAMESPACE_NOTFOUND, why);
     }
   }
-
-  public List<BulkImportStatus> getBulkLoadStatus() {
-    return bulkImportStatus.getBulkLoadStatus();
-  }
-
 }

@@ -23,9 +23,9 @@ import java.util.List;
 
 import jakarta.xml.bind.annotation.XmlAttribute;
 
-import org.apache.accumulo.core.master.thrift.RecoveryStatus;
-import org.apache.accumulo.core.master.thrift.TableInfo;
-import org.apache.accumulo.core.master.thrift.TabletServerStatus;
+import org.apache.accumulo.core.manager.thrift.RecoveryStatus;
+import org.apache.accumulo.core.manager.thrift.TableInfo;
+import org.apache.accumulo.core.manager.thrift.TabletServerStatus;
 import org.apache.accumulo.monitor.Monitor;
 import org.apache.accumulo.monitor.rest.tables.CompactionsList;
 import org.apache.accumulo.monitor.rest.tables.CompactionsTypes;
@@ -64,20 +64,15 @@ public class TabletServerInformation {
   // New variables
 
   public String ip;
-  private Integer scansRunning;
-  private Integer scansQueued;
+  public Integer scansRunning;
+  public Integer scansQueued;
   // combo string with running value and number queued in parenthesis
   public String minorCombo;
-  public String majorCombo;
   public String scansCombo;
-  private Integer minorRunning;
-  private Integer minorQueued;
-
-  private Integer majorRunning;
-  private Integer majorQueued;
+  public Integer minorRunning;
+  public Integer minorQueued;
 
   private CompactionsList scansCompacting; // if scans is removed, change scansCompacting to scans
-  private CompactionsList major;
   private CompactionsList minor;
   public long entries;
   public long lookups;
@@ -136,13 +131,7 @@ public class TabletServerInformation {
 
     this.minor = new CompactionsList(this.minorRunning, this.minorQueued);
 
-    this.majorRunning = summary.majors != null ? summary.majors.running : 0;
-    this.majorQueued = summary.majors != null ? summary.majors.queued : 0;
-    this.majorCombo = majorRunning + "(" + majorQueued + ")";
-
-    this.major = new CompactionsList(this.majorRunning, this.majorQueued);
-
-    this.compactions = new CompactionsTypes(scansCompacting, major, minor);
+    this.compactions = new CompactionsTypes(scansCompacting, minor);
 
     this.osload = thriftStatus.osLoad;
     this.version = thriftStatus.version;

@@ -21,17 +21,28 @@ package org.apache.accumulo.core.file;
 import java.io.DataInputStream;
 import java.io.IOException;
 
-import org.apache.accumulo.core.data.Key;
+import org.apache.accumulo.core.dataImpl.KeyExtent;
 import org.apache.accumulo.core.file.blockfile.impl.CacheProvider;
 import org.apache.accumulo.core.iteratorsImpl.system.InterruptibleIterator;
 import org.apache.accumulo.core.sample.impl.SamplerConfigurationImpl;
+import org.apache.hadoop.io.Text;
 
 public interface FileSKVIterator extends InterruptibleIterator, AutoCloseable {
-  Key getFirstKey() throws IOException;
+  Text getFirstRow() throws IOException;
 
-  Key getLastKey() throws IOException;
+  Text getLastRow() throws IOException;
 
   DataInputStream getMetaStore(String name) throws IOException, NoSuchMetaStoreException;
+
+  /**
+   * Returns an estimate of the number of entries that overlap the given extent. This is an estimate
+   * because the extent may or may not entirely overlap with each of the index entries included in
+   * the count. Will never underestimate but may overestimate.
+   *
+   * @param extent the key extent
+   * @return the estimate
+   */
+  long estimateOverlappingEntries(KeyExtent extent) throws IOException;
 
   FileSKVIterator getSample(SamplerConfigurationImpl sampleConfig);
 

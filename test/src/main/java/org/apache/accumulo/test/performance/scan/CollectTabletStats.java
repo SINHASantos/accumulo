@@ -18,7 +18,7 @@
  */
 package org.apache.accumulo.test.performance.scan;
 
-import static org.apache.accumulo.harness.AccumuloITBase.random;
+import static org.apache.accumulo.core.util.LazySingletons.RANDOM;
 
 import java.io.IOException;
 import java.net.InetAddress;
@@ -63,8 +63,9 @@ import org.apache.accumulo.core.iteratorsImpl.system.DeletingIterator.Behavior;
 import org.apache.accumulo.core.iteratorsImpl.system.MultiIterator;
 import org.apache.accumulo.core.iteratorsImpl.system.SortedMapIterator;
 import org.apache.accumulo.core.iteratorsImpl.system.VisibilityFilter;
-import org.apache.accumulo.core.metadata.MetadataServicer;
+import org.apache.accumulo.core.metadata.StoredTabletFile;
 import org.apache.accumulo.core.metadata.TabletFile;
+import org.apache.accumulo.core.metadata.schema.TabletMetadata;
 import org.apache.accumulo.core.security.Authorizations;
 import org.apache.accumulo.core.spi.crypto.NoCryptoServiceFactory;
 import org.apache.accumulo.core.util.Stat;
@@ -76,13 +77,11 @@ import org.apache.accumulo.server.util.MetadataTableUtil;
 import org.apache.hadoop.fs.BlockLocation;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.Text;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.beust.jcommander.Parameter;
-import com.google.common.net.HostAndPort;
 
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 
@@ -137,10 +136,10 @@ public class CollectTabletStats {
 
     List<KeyExtent> tabletsToTest = selectRandomTablets(opts.numThreads, candidates);
 
-    Map<KeyExtent,List<TabletFile>> tabletFiles = new HashMap<>();
+    Map<KeyExtent,List<StoredTabletFile>> tabletFiles = new HashMap<>();
 
     for (KeyExtent ke : tabletsToTest) {
-      List<TabletFile> files = getTabletFiles(context, ke);
+      List<StoredTabletFile> files = getTabletFiles(context, ke);
       tabletFiles.put(ke, files);
     }
 
@@ -167,7 +166,7 @@ public class CollectTabletStats {
       ArrayList<Test> tests = new ArrayList<>();
 
       for (final KeyExtent ke : tabletsToTest) {
-        final List<TabletFile> files = tabletFiles.get(ke);
+        final List<StoredTabletFile> files = tabletFiles.get(ke);
         Test test = new Test(ke) {
           @Override
           public int runTest() throws Exception {
@@ -187,7 +186,7 @@ public class CollectTabletStats {
       ArrayList<Test> tests = new ArrayList<>();
 
       for (final KeyExtent ke : tabletsToTest) {
-        final List<TabletFile> files = tabletFiles.get(ke);
+        final List<StoredTabletFile> files = tabletFiles.get(ke);
         Test test = new Test(ke) {
           @Override
           public int runTest() throws Exception {
@@ -205,7 +204,7 @@ public class CollectTabletStats {
       ArrayList<Test> tests = new ArrayList<>();
 
       for (final KeyExtent ke : tabletsToTest) {
-        final List<TabletFile> files = tabletFiles.get(ke);
+        final List<StoredTabletFile> files = tabletFiles.get(ke);
         Test test = new Test(ke) {
           @Override
           public int runTest() throws Exception {
@@ -356,22 +355,25 @@ public class CollectTabletStats {
       String tableName, SortedMap<KeyExtent,String> tabletLocations) throws Exception {
 
     TableId tableId = context.getTableId(tableName);
-    MetadataServicer.forTableId(context, tableId).getTabletLocations(tabletLocations);
 
     InetAddress localaddress = InetAddress.getLocalHost();
 
     List<KeyExtent> candidates = new ArrayList<>();
 
-    for (Entry<KeyExtent,String> entry : tabletLocations.entrySet()) {
-      String loc = entry.getValue();
-      if (loc != null) {
-        boolean isLocal =
-            HostAndPort.fromString(entry.getValue()).getHost().equals(localaddress.getHostName());
+    try (var tabletsMeta = context.getAmple().readTablets().forTable(tableId)
+        .fetch(TabletMetadata.ColumnType.LOCATION).checkConsistency().build()) {
+      for (var tabletMeta : tabletsMeta) {
+        var loc = tabletMeta.getLocation();
+        if (loc != null && loc.getType() == TabletMetadata.LocationType.CURRENT) {
+          boolean isLocal = loc.getHost().equals(localaddress.getHostName());
 
-        if (selectLocalTablets && isLocal) {
-          candidates.add(entry.getKey());
-        } else if (!selectLocalTablets && !isLocal) {
-          candidates.add(entry.getKey());
+          if (selectLocalTablets && isLocal) {
+            candidates.add(tabletMeta.getExtent());
+            tabletLocations.put(tabletMeta.getExtent(), loc.getHostPort());
+          } else if (!selectLocalTablets && !isLocal) {
+            candidates.add(tabletMeta.getExtent());
+            tabletLocations.put(tabletMeta.getExtent(), loc.getHostPort());
+          }
         }
       }
     }
@@ -382,7 +384,7 @@ public class CollectTabletStats {
     List<KeyExtent> tabletsToTest = new ArrayList<>();
 
     for (int i = 0; i < numThreads; i++) {
-      int rindex = random.nextInt(candidates.size());
+      int rindex = RANDOM.get().nextInt(candidates.size());
       tabletsToTest.add(candidates.get(rindex));
       Collections.swap(candidates, rindex, candidates.size() - 1);
       candidates = candidates.subList(0, candidates.size() - 1);
@@ -390,14 +392,14 @@ public class CollectTabletStats {
     return tabletsToTest;
   }
 
-  private static List<TabletFile> getTabletFiles(ServerContext context, KeyExtent ke)
+  private static List<StoredTabletFile> getTabletFiles(ServerContext context, KeyExtent ke)
       throws IOException {
     return new ArrayList<>(
         MetadataTableUtil.getFileAndLogEntries(context, ke).getSecond().keySet());
   }
 
-  private static void reportHdfsBlockLocations(ServerContext context, List<TabletFile> files)
-      throws Exception {
+  private static void reportHdfsBlockLocations(ServerContext context,
+      List<? extends TabletFile> files) throws Exception {
     VolumeManager fs = context.getVolumeManager();
 
     System.out.println("\t\tFile block report : ");
@@ -405,8 +407,8 @@ public class CollectTabletStats {
       FileStatus status = fs.getFileStatus(file.getPath());
 
       if (status.isDirectory()) {
-        // assume it is a map file
-        status = fs.getFileStatus(new Path(file + "/data"));
+        log.warn("Saw unexpected directory at {} while getting block locations", file);
+        continue;
       }
       FileSystem ns = fs.getFileSystemByPath(file.getPath());
       BlockLocation[] locs = ns.getFileBlockLocations(status, 0, status.getLen());
@@ -427,16 +429,16 @@ public class CollectTabletStats {
   }
 
   private static SortedKeyValueIterator<Key,Value> createScanIterator(KeyExtent ke,
-      Collection<SortedKeyValueIterator<Key,Value>> mapfiles, Authorizations authorizations,
+      Collection<SortedKeyValueIterator<Key,Value>> dataFiles, Authorizations authorizations,
       byte[] defaultLabels, HashSet<Column> columnSet, List<IterInfo> ssiList,
       Map<String,Map<String,String>> ssio, boolean useTableIterators, TableConfiguration conf)
       throws IOException {
 
     SortedMapIterator smi = new SortedMapIterator(new TreeMap<>());
 
-    List<SortedKeyValueIterator<Key,Value>> iters = new ArrayList<>(mapfiles.size() + 1);
+    List<SortedKeyValueIterator<Key,Value>> iters = new ArrayList<>(dataFiles.size() + 1);
 
-    iters.addAll(mapfiles);
+    iters.addAll(dataFiles);
     iters.add(smi);
 
     MultiIterator multiIter = new MultiIterator(iters, ke);
@@ -456,16 +458,16 @@ public class CollectTabletStats {
   }
 
   private static int readFiles(VolumeManager fs, AccumuloConfiguration aconf,
-      List<TabletFile> files, KeyExtent ke, String[] columns) throws Exception {
+      List<StoredTabletFile> files, KeyExtent ke, String[] columns) throws Exception {
 
     int count = 0;
 
     HashSet<ByteSequence> columnSet = createColumnBSS(columns);
 
-    for (TabletFile file : files) {
+    for (StoredTabletFile file : files) {
       FileSystem ns = fs.getFileSystemByPath(file.getPath());
       FileSKVIterator reader = FileOperations.getInstance().newReaderBuilder()
-          .forFile(file.getPathStr(), ns, ns.getConf(), NoCryptoServiceFactory.NONE)
+          .forFile(file, ns, ns.getConf(), NoCryptoServiceFactory.NONE)
           .withTableConfiguration(aconf).build();
       Range range = new Range(ke.prevEndRow(), false, ke.endRow(), true);
       reader.seek(range, columnSet, !columnSet.isEmpty());
@@ -488,17 +490,17 @@ public class CollectTabletStats {
   }
 
   private static int readFilesUsingIterStack(VolumeManager fs, ServerContext context,
-      List<TabletFile> files, Authorizations auths, KeyExtent ke, String[] columns,
+      List<StoredTabletFile> files, Authorizations auths, KeyExtent ke, String[] columns,
       boolean useTableIterators) throws Exception {
 
     SortedKeyValueIterator<Key,Value> reader;
 
     List<SortedKeyValueIterator<Key,Value>> readers = new ArrayList<>(files.size());
 
-    for (TabletFile file : files) {
+    for (StoredTabletFile file : files) {
       FileSystem ns = fs.getFileSystemByPath(file.getPath());
       readers.add(FileOperations.getInstance().newReaderBuilder()
-          .forFile(file.getPathStr(), ns, ns.getConf(), NoCryptoServiceFactory.NONE)
+          .forFile(file, ns, ns.getConf(), NoCryptoServiceFactory.NONE)
           .withTableConfiguration(context.getConfiguration()).build());
     }
 

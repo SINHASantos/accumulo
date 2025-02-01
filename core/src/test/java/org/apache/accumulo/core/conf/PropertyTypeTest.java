@@ -28,6 +28,7 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import org.apache.accumulo.core.WithTestNames;
+import org.apache.accumulo.core.file.rfile.RFile;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -76,7 +77,7 @@ public class PropertyTypeTest extends WithTestNames {
         .collect(Collectors.toSet());
 
     Set<String> types =
-        Stream.of(PropertyType.values()).map(Enum<PropertyType>::name).collect(Collectors.toSet());
+        Stream.of(PropertyType.values()).map(Enum::name).collect(Collectors.toSet());
 
     assertEquals(types, typesTested, "Expected to see a test method for each property type");
   }
@@ -145,12 +146,6 @@ public class PropertyTypeTest extends WithTestNames {
   }
 
   @Test
-  public void testTypeLAST_LOCATION_MODE() {
-    valid(null, "compaction", "assignment");
-    invalid("", "other");
-  }
-
-  @Test
   public void testTypeFRACTION() {
     valid(null, "1", "0", "1.0", "25%", "2.5%", "10.2E-3", "10.2E-3%", ".3");
     invalid("", "other", "20%%", "-0.3", "3.6a", "%25", "3%a");
@@ -189,6 +184,15 @@ public class PropertyTypeTest extends WithTestNames {
   }
 
   @Test
+  public void testTypeJSON() {
+    valid("{\"y\":123}",
+        "[{'name':'small','type':'internal','maxSize':'32M','numThreads':1},{'name':'huge','type':'internal','numThreads':1}]"
+            .replaceAll("'", "\""));
+    invalid("not json", "{\"x}", "{\"y\"", "{name:value}",
+        "{ \"foo\" : \"bar\", \"foo\" : \"baz\" }", "{\"y\":123}extra");
+  }
+
+  @Test
   public void testTypePREFIX() {
     invalid(null, "", "whatever");
   }
@@ -207,6 +211,12 @@ public class PropertyTypeTest extends WithTestNames {
   @Test
   public void testTypeURI() {
     valid(null, "", "hdfs://hostname", "file:///path/", "hdfs://example.com:port/path");
+  }
+
+  @Test
+  public void testTypeFILENAME_EXT() {
+    valid(RFile.EXTENSION, "rf");
+    invalid(null, "RF", "map", "", "MAP", "rF", "Rf", " rf ");
   }
 
 }

@@ -25,10 +25,10 @@ import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
 
-import org.apache.accumulo.core.Constants;
 import org.apache.accumulo.core.clientImpl.AcceptableThriftTableOperationException;
 import org.apache.accumulo.core.clientImpl.thrift.TableOperation;
 import org.apache.accumulo.core.clientImpl.thrift.TableOperationExceptionType;
+import org.apache.accumulo.core.fate.FateId;
 import org.apache.accumulo.core.fate.Repo;
 import org.apache.accumulo.core.file.FileOperations;
 import org.apache.accumulo.manager.Manager;
@@ -45,14 +45,14 @@ class MapImportFileNames extends ManagerRepo {
 
   private static final long serialVersionUID = 1L;
 
-  private ImportedTableInfo tableInfo;
+  private final ImportedTableInfo tableInfo;
 
   MapImportFileNames(ImportedTableInfo ti) {
     this.tableInfo = ti;
   }
 
   @Override
-  public Repo<Manager> call(long tid, Manager environment) throws Exception {
+  public Repo<Manager> call(FateId fateId, Manager environment) throws Exception {
 
     for (ImportedTableInfo.DirectoryMapping dm : tableInfo.directories) {
       Path path = new Path(dm.importDir, IMPORT_MAPPINGS_FILE);
@@ -78,12 +78,13 @@ class MapImportFileNames extends ManagerRepo {
           if (sa.length > 1) {
             extension = sa[sa.length - 1];
 
+            // skip files with unknown extensions
             if (!FileOperations.getValidExtensions().contains(extension)) {
               continue;
             }
           } else {
-            // assume it is a map file
-            extension = Constants.MAPFILE_EXTENSION;
+            // skip files without an extension
+            continue;
           }
 
           String newName = "I" + namer.getNextName() + "." + extension;
@@ -116,7 +117,7 @@ class MapImportFileNames extends ManagerRepo {
   }
 
   @Override
-  public void undo(long tid, Manager env) throws Exception {
+  public void undo(FateId fateId, Manager env) throws Exception {
     // TODO: will this be OK for partially complete operations?
     for (ImportedTableInfo.DirectoryMapping dm : tableInfo.directories) {
       env.getVolumeManager().deleteRecursively(new Path(dm.importDir));

@@ -18,6 +18,8 @@
  */
 package org.apache.accumulo.test.functional;
 
+import static org.apache.accumulo.core.metrics.Metric.MINC_PAUSED;
+import static org.apache.accumulo.test.compaction.ExternalCompactionTestUtils.getActiveCompactions;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -26,14 +28,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.DoubleAdder;
-import java.util.stream.Collectors;
 
 import org.apache.accumulo.core.client.Accumulo;
 import org.apache.accumulo.core.client.AccumuloClient;
 import org.apache.accumulo.core.client.Scanner;
 import org.apache.accumulo.core.client.admin.TableOperations;
 import org.apache.accumulo.core.conf.Property;
-import org.apache.accumulo.core.metrics.MetricsProducer;
 import org.apache.accumulo.harness.MiniClusterConfigurationCallback;
 import org.apache.accumulo.harness.SharedMiniClusterBase;
 import org.apache.accumulo.minicluster.MemoryUnit;
@@ -54,11 +54,9 @@ public class MemoryStarvedMinCIT extends SharedMiniClusterBase {
 
     @Override
     public void configureMiniCluster(MiniAccumuloConfigImpl cfg, Configuration coreSite) {
-      cfg.setNumTservers(1);
+      cfg.getClusterServerConfiguration().setNumDefaultTabletServers(1);
       cfg.setMemory(ServerType.TABLET_SERVER, 256, MemoryUnit.MEGABYTE);
       // Configure the LowMemoryDetector in the TabletServer
-      // check on 1s intervals and set low mem condition if more than 80% of
-      // the heap is used.
       cfg.setProperty(Property.GENERAL_LOW_MEM_DETECTOR_INTERVAL, "5s");
       cfg.setProperty(Property.GENERAL_LOW_MEM_DETECTOR_THRESHOLD,
           Double.toString(MemoryStarvedScanIT.FREE_MEMORY_THRESHOLD));
@@ -74,7 +72,7 @@ public class MemoryStarvedMinCIT extends SharedMiniClusterBase {
     }
   }
 
-  private static final DoubleAdder MINC_PAUSED = new DoubleAdder();
+  private static final DoubleAdder MINC_PAUSED_COUNT = new DoubleAdder();
   private static TestStatsDSink sink;
   private static Thread metricConsumer;
 
@@ -90,9 +88,9 @@ public class MemoryStarvedMinCIT extends SharedMiniClusterBase {
           }
           if (line.startsWith("accumulo")) {
             Metric metric = TestStatsDSink.parseStatsDMetric(line);
-            if (MetricsProducer.METRICS_MINC_PAUSED.equals(metric.getName())) {
-              Double val = Double.parseDouble(metric.getValue());
-              MINC_PAUSED.add(val);
+            if (MINC_PAUSED.getName().equals(metric.getName())) {
+              double val = Double.parseDouble(metric.getValue());
+              MINC_PAUSED_COUNT.add(val);
             }
           }
         }
@@ -112,9 +110,9 @@ public class MemoryStarvedMinCIT extends SharedMiniClusterBase {
   }
 
   @BeforeEach
-  public void beforeEach() throws Exception {
+  public void beforeEach() {
     // Reset the client side counters
-    MINC_PAUSED.reset();
+    MINC_PAUSED_COUNT.reset();
   }
 
   @Test
@@ -142,27 +140,25 @@ public class MemoryStarvedMinCIT extends SharedMiniClusterBase {
 
       try (Scanner scanner = client.createScanner(table)) {
 
-        MemoryStarvedScanIT.consumeServerMemory(scanner, table);
+        MemoryStarvedScanIT.consumeServerMemory(scanner);
 
-        Double paused = MINC_PAUSED.doubleValue();
+        int paused = MINC_PAUSED_COUNT.intValue();
         assertEquals(0, paused);
 
         ingestThread.start();
 
-        while (paused == 0) {
+        while (paused <= 0) {
           Thread.sleep(1000);
-          paused = MINC_PAUSED.doubleValue();
+          paused = MINC_PAUSED_COUNT.intValue();
         }
-        assertTrue(paused > 0);
 
-        MemoryStarvedScanIT.freeServerMemory(client, table);
+        MemoryStarvedScanIT.freeServerMemory(client);
         ingestThread.interrupt();
         ingestThread.join();
         assertNull(error.get());
-        assertTrue(client.instanceOperations().getActiveCompactions().stream()
-            .filter(ac -> ac.getPausedCount() > 0).collect(Collectors.toList()).size() > 0);
+        assertTrue(getActiveCompactions(client.instanceOperations()).stream()
+            .anyMatch(ac -> ac.getPausedCount() > 0));
       }
     }
   }
-
 }

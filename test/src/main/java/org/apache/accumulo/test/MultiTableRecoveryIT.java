@@ -18,14 +18,15 @@
  */
 package org.apache.accumulo.test;
 
-import static com.google.common.util.concurrent.Uninterruptibles.sleepUninterruptibly;
+import static java.nio.charset.StandardCharsets.UTF_8;
+import static java.util.concurrent.TimeUnit.SECONDS;
+import static org.apache.accumulo.core.util.LazySingletons.RANDOM;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.time.Duration;
 import java.util.Map.Entry;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.accumulo.core.client.Accumulo;
@@ -37,7 +38,7 @@ import org.apache.accumulo.core.conf.Property;
 import org.apache.accumulo.core.data.Key;
 import org.apache.accumulo.core.data.Mutation;
 import org.apache.accumulo.core.data.Value;
-import org.apache.accumulo.core.metadata.MetadataTable;
+import org.apache.accumulo.core.metadata.AccumuloTable;
 import org.apache.accumulo.core.security.Authorizations;
 import org.apache.accumulo.minicluster.ServerType;
 import org.apache.accumulo.miniclusterImpl.MiniAccumuloConfigImpl;
@@ -74,7 +75,7 @@ public class MultiTableRecoveryIT extends ConfigurableMacBase {
       System.out.println("Creating tables");
       for (String tableName : tables) {
         c.tableOperations().create(tableName);
-        values[i] = Integer.toString(i).getBytes();
+        values[i] = Integer.toString(i).getBytes(UTF_8);
         writers[i] = c.createBatchWriter(tableName);
         i++;
       }
@@ -85,7 +86,7 @@ public class MultiTableRecoveryIT extends ConfigurableMacBase {
       System.out.println("writing");
       for (i = 0; i < 1_000_000; i++) {
         // make non-negative avoiding Math.abs, because that can still be negative
-        long randomRow = random.nextLong() & Long.MAX_VALUE;
+        long randomRow = RANDOM.get().nextLong() & Long.MAX_VALUE;
         assertTrue(randomRow >= 0);
         final int table = (int) (randomRow % N);
         final Mutation m = new Mutation(Long.toHexString(randomRow));
@@ -125,12 +126,13 @@ public class MultiTableRecoveryIT extends ConfigurableMacBase {
       try (AccumuloClient client = Accumulo.newClient().from(getClientProperties()).build()) {
         int i = 0;
         while (!stop.get()) {
-          sleepUninterruptibly(10, TimeUnit.SECONDS);
+          Thread.sleep(SECONDS.toMillis(10));
           System.out.println("Restarting");
           getCluster().getClusterControl().stop(ServerType.TABLET_SERVER);
           getCluster().start();
           // read the metadata table to know everything is back up
-          try (Scanner scanner = client.createScanner(MetadataTable.NAME, Authorizations.EMPTY)) {
+          try (Scanner scanner =
+              client.createScanner(AccumuloTable.METADATA.tableName(), Authorizations.EMPTY)) {
             scanner.forEach((k, v) -> {});
           }
           i++;

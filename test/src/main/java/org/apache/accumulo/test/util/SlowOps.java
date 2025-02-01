@@ -18,7 +18,9 @@
  */
 package org.apache.accumulo.test.util;
 
-import static com.google.common.util.concurrent.Uninterruptibles.sleepUninterruptibly;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static java.util.concurrent.TimeUnit.NANOSECONDS;
+import static java.util.concurrent.TimeUnit.SECONDS;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -27,7 +29,6 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
 
 import org.apache.accumulo.core.client.AccumuloClient;
 import org.apache.accumulo.core.client.AccumuloException;
@@ -37,14 +38,15 @@ import org.apache.accumulo.core.client.IteratorSetting;
 import org.apache.accumulo.core.client.Scanner;
 import org.apache.accumulo.core.client.TableExistsException;
 import org.apache.accumulo.core.client.TableNotFoundException;
-import org.apache.accumulo.core.client.admin.ActiveCompaction;
+import org.apache.accumulo.core.clientImpl.ClientContext;
 import org.apache.accumulo.core.clientImpl.TableOperationsImpl;
-import org.apache.accumulo.core.conf.Property;
 import org.apache.accumulo.core.data.Key;
 import org.apache.accumulo.core.data.Mutation;
+import org.apache.accumulo.core.data.TableId;
 import org.apache.accumulo.core.data.Value;
+import org.apache.accumulo.core.dataImpl.KeyExtent;
 import org.apache.accumulo.core.security.Authorizations;
-import org.apache.accumulo.core.util.UtilWaitThread;
+import org.apache.accumulo.core.util.compaction.ExternalCompactionUtil;
 import org.apache.accumulo.test.functional.SlowIterator;
 import org.apache.hadoop.io.Text;
 import org.slf4j.Logger;
@@ -78,18 +80,6 @@ public class SlowOps {
     createData();
   }
 
-  public static void setExpectedCompactions(AccumuloClient client, final int numParallelExpected) {
-    final int target = numParallelExpected + 1;
-    try {
-      client.instanceOperations().setProperty(
-          Property.TSERV_COMPACTION_SERVICE_DEFAULT_EXECUTORS.getKey(),
-          "[{'name':'any','numThreads':" + target + "}]".replaceAll("'", "\""));
-      UtilWaitThread.sleep(3_000); // give it time to propagate
-    } catch (AccumuloException | AccumuloSecurityException | NumberFormatException ex) {
-      throw new IllegalStateException("Could not set parallel compaction limit to " + target, ex);
-    }
-  }
-
   public String getTableName() {
     return tableName;
   }
@@ -118,7 +108,7 @@ public class SlowOps {
     long startTimestamp = System.nanoTime();
     int count = scanCount();
     log.trace("Scan time for {} rows {} ms", NUM_DATA_ROWS,
-        TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTimestamp));
+        NANOSECONDS.toMillis(System.nanoTime() - startTimestamp));
     if (count != NUM_DATA_ROWS) {
       throw new IllegalStateException(
           String.format("Number of rows %1$d does not match expected %2$d", count, NUM_DATA_ROWS));
@@ -198,7 +188,7 @@ public class SlowOps {
       log.debug("Compaction wait is complete");
 
       log.trace("Slow compaction of {} rows took {} ms", NUM_DATA_ROWS,
-          TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTimestamp));
+          NANOSECONDS.toMillis(System.nanoTime() - startTimestamp));
 
       // validate that number of rows matches expected.
 
@@ -209,7 +199,7 @@ public class SlowOps {
       int count = scanCount();
 
       log.trace("After compaction, scan time for {} rows {} ms", NUM_DATA_ROWS,
-          TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTimestamp));
+          NANOSECONDS.toMillis(System.nanoTime() - startTimestamp));
 
       if (count != NUM_DATA_ROWS) {
         throw new IllegalStateException(
@@ -226,44 +216,32 @@ public class SlowOps {
    */
   private boolean blockUntilCompactionRunning() {
     long startWaitNanos = System.nanoTime();
-    long maxWaitNanos = TimeUnit.MILLISECONDS.toNanos(maxWaitMillis);
+    long maxWaitNanos = MILLISECONDS.toNanos(maxWaitMillis);
 
     /*
      * wait for compaction to start on table - The compaction will acquire a fate transaction lock
      * that used to block a subsequent online command while the fate transaction lock was held.
      */
+    TableId tableId = TableId.of(client.tableOperations().tableIdMap().get(tableName));
     do {
-      List<String> tservers = client.instanceOperations().getTabletServers();
-      boolean tableFound = tservers.stream().flatMap(tserver -> {
-        // get active compactions from each server
-        try {
-          List<ActiveCompaction> ac = client.instanceOperations().getActiveCompactions(tserver);
-          log.trace("tserver {}, running compactions {}", tserver, ac.size());
-          return ac.stream();
-        } catch (AccumuloException | AccumuloSecurityException e) {
-          throw new IllegalStateException("failed to get active compactions, test fails.", e);
-        }
-      }).map(activeCompaction -> {
-        // emit table being compacted
-        try {
-          String compactionTable = activeCompaction.getTable();
-          log.debug("Compaction running for {}", compactionTable);
-          return compactionTable;
-        } catch (TableNotFoundException ex) {
-          log.trace("Compaction found for unknown table {}", activeCompaction);
-          return null;
-        }
-      }).anyMatch(tableName::equals);
+      boolean tableFound =
+          ExternalCompactionUtil.getCompactionsRunningOnCompactors((ClientContext) client).stream()
+              .map(rc -> KeyExtent.fromThrift(rc.getJob().getExtent()).tableId())
+              .anyMatch(tableId::equals);
 
       if (tableFound) {
         return true;
       }
 
-      sleepUninterruptibly(3, TimeUnit.SECONDS);
+      try {
+        Thread.sleep(SECONDS.toMillis(3));
+      } catch (InterruptedException ex) {
+        throw new IllegalStateException("interrupted during sleep", ex);
+      }
     } while ((System.nanoTime() - startWaitNanos) < maxWaitNanos);
 
     log.debug("Could not find compaction for {} after {} seconds", tableName,
-        TimeUnit.MILLISECONDS.toSeconds(maxWaitMillis));
+        MILLISECONDS.toSeconds(maxWaitMillis));
     return false;
   }
 

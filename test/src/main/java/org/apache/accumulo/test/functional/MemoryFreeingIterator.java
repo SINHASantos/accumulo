@@ -18,29 +18,27 @@
  */
 package org.apache.accumulo.test.functional;
 
-import java.io.IOException;
-import java.util.Map;
-import java.util.concurrent.TimeUnit;
+import static java.util.concurrent.TimeUnit.SECONDS;
 
-import org.apache.accumulo.core.data.Key;
-import org.apache.accumulo.core.data.Value;
-import org.apache.accumulo.core.iterators.IteratorEnvironment;
-import org.apache.accumulo.core.iterators.SortedKeyValueIterator;
 import org.apache.accumulo.core.iterators.WrappingIterator;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import com.google.common.util.concurrent.Uninterruptibles;
+import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 
 public class MemoryFreeingIterator extends WrappingIterator {
 
-  @Override
-  public void init(SortedKeyValueIterator<Key,Value> source, Map<String,String> options,
-      IteratorEnvironment env) throws IOException {
-    super.init(source, options, env);
+  private static final Logger LOG = LoggerFactory.getLogger(MemoryFreeingIterator.class);
+
+  @SuppressFBWarnings(value = "DM_GC", justification = "gc is okay for test")
+  public MemoryFreeingIterator() throws InterruptedException {
+    LOG.info("Try to free consumed memory - will block until isRunningLowOnMemory returns false.");
     MemoryConsumingIterator.freeBuffers();
     while (this.isRunningLowOnMemory()) {
+      System.gc();
       // wait for LowMemoryDetector to recognize the memory is free.
-      Uninterruptibles.sleepUninterruptibly(1, TimeUnit.SECONDS);
+      Thread.sleep(SECONDS.toMillis(1));
     }
+    LOG.info("isRunningLowOnMemory returned false - memory available");
   }
-
 }

@@ -25,7 +25,7 @@
          *   - uses ajax call for data source and saves sort state in session
          *   - defines custom number formats
          */
-        $(document).ready(function () {
+        $(function () {
 
           tableList = $('#tableList').DataTable({
             "ajax": {
@@ -49,7 +49,23 @@
                   if (type === 'display') data = timeDuration(data);
                   return data;
                 }
-              }
+              },
+              // ensure these 3 columns are sorted by the 2 numeric values that comprise the combined string
+              // instead of sorting them lexicographically by the string itself.
+              // Specifically: 'targets' column will use the values in the 'orderData' columns
+
+              // scan column will be sorted by number of running, then by number of queued
+              {
+                "targets": [10],
+                "type": "numeric",
+                "orderData": [13, 14]
+              },
+              // minor compaction column will be sorted by number of running, then by number of queued
+              {
+                "targets": [11],
+                "type": "numeric",
+                "orderData": [15, 16]
+              },
             ],
             "columns": [
               {
@@ -73,7 +89,10 @@
               { "data": "holdTime", "orderSequence": ["desc", "asc"] },
               { "data": "scansCombo", "orderSequence": ["desc", "asc"] },
               { "data": "minorCombo", "orderSequence": ["desc", "asc"] },
-              { "data": "majorCombo", "orderSequence": ["desc", "asc"] }
+              { "data": "runningScans", "orderSequence": ["desc", "asc"], "visible": false },
+              { "data": "queuedScans", "orderSequence": ["desc", "asc"], "visible": false},
+              { "data": "runningMinorCompactions", "orderSequence": ["desc", "asc"], "visible": false },
+              { "data": "queuedMinorCompactions", "orderSequence": ["desc", "asc"], "visible": false },
             ]
           });
         });
@@ -111,7 +130,6 @@
               <th title="The amount of time live ingest operations (mutations, batch writes) have been waiting for the tserver to free up memory." class="duration">Hold&nbsp;Time</th>
               <th title="Running scans. The number queued waiting are in parentheses.">Scans</th>
               <th title="Minor Compactions. The number of tablets waiting for compaction are in parentheses.">MinC</th>
-              <th title="Major Compactions. The number of tablets waiting for compaction are in parentheses.">MajC</th>
             </tr>
           </thead>
           <tbody></tbody>

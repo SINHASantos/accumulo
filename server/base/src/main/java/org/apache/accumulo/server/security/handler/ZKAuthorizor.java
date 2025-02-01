@@ -49,7 +49,7 @@ public class ZKAuthorizor implements Authorizor {
   @Override
   public void initialize(ServerContext context) {
     this.context = context;
-    zooCache = new ZooCache(context.getZooReader(), null);
+    zooCache = new ZooCache(context.getZooSession());
     zkUserPath = context.zkUserPath();
   }
 
@@ -70,7 +70,7 @@ public class ZKAuthorizor implements Authorizor {
   @Override
   public void initializeSecurity(TCredentials itw, String rootuser)
       throws AccumuloSecurityException {
-    ZooReaderWriter zoo = context.getZooReaderWriter();
+    ZooReaderWriter zoo = context.getZooSession().asReaderWriter();
 
     // create the root user with no record-level authorizations
     try {
@@ -84,13 +84,13 @@ public class ZKAuthorizor implements Authorizor {
           ZKSecurityTool.convertAuthorizations(Authorizations.EMPTY), NodeExistsPolicy.FAIL);
     } catch (KeeperException | InterruptedException e) {
       log.error("{}", e.getMessage(), e);
-      throw new RuntimeException(e);
+      throw new IllegalStateException(e);
     }
   }
 
   @Override
   public void initUser(String user) throws AccumuloSecurityException {
-    ZooReaderWriter zoo = context.getZooReaderWriter();
+    ZooReaderWriter zoo = context.getZooSession().asReaderWriter();
     try {
       zoo.putPersistentData(zkUserPath + "/" + user, new byte[0], NodeExistsPolicy.SKIP);
     } catch (KeeperException e) {
@@ -98,7 +98,7 @@ public class ZKAuthorizor implements Authorizor {
       throw new AccumuloSecurityException(user, SecurityErrorCode.CONNECTION_ERROR, e);
     } catch (InterruptedException e) {
       log.error("{}", e.getMessage(), e);
-      throw new RuntimeException(e);
+      throw new IllegalStateException(e);
     }
   }
 
@@ -106,13 +106,13 @@ public class ZKAuthorizor implements Authorizor {
   public void dropUser(String user) throws AccumuloSecurityException {
     try {
       synchronized (zooCache) {
-        ZooReaderWriter zoo = context.getZooReaderWriter();
+        ZooReaderWriter zoo = context.getZooSession().asReaderWriter();
         zoo.recursiveDelete(zkUserPath + "/" + user + ZKUserAuths, NodeMissingPolicy.SKIP);
         zooCache.clear(zkUserPath + "/" + user);
       }
     } catch (InterruptedException e) {
       log.error("{}", e.getMessage(), e);
-      throw new RuntimeException(e);
+      throw new IllegalStateException(e);
     } catch (KeeperException e) {
       log.error("{}", e.getMessage(), e);
       if (e.code().equals(KeeperException.Code.NONODE)) {
@@ -129,7 +129,8 @@ public class ZKAuthorizor implements Authorizor {
     try {
       synchronized (zooCache) {
         zooCache.clear();
-        context.getZooReaderWriter().putPersistentData(zkUserPath + "/" + user + ZKUserAuths,
+        context.getZooSession().asReaderWriter().putPersistentData(
+            zkUserPath + "/" + user + ZKUserAuths,
             ZKSecurityTool.convertAuthorizations(authorizations), NodeExistsPolicy.OVERWRITE);
       }
     } catch (KeeperException e) {
@@ -137,7 +138,7 @@ public class ZKAuthorizor implements Authorizor {
       throw new AccumuloSecurityException(user, SecurityErrorCode.CONNECTION_ERROR, e);
     } catch (InterruptedException e) {
       log.error("{}", e.getMessage(), e);
-      throw new RuntimeException(e);
+      throw new IllegalStateException(e);
     }
   }
 

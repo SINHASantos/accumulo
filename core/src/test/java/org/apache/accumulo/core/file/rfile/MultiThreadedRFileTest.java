@@ -18,8 +18,10 @@
  */
 package org.apache.accumulo.core.file.rfile;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
-import static java.util.concurrent.TimeUnit.SECONDS;
+import static java.util.concurrent.TimeUnit.MINUTES;
+import static org.apache.accumulo.core.util.LazySingletons.RANDOM;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -29,7 +31,6 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.io.UncheckedIOException;
-import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -71,7 +72,6 @@ import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 @SuppressFBWarnings(value = "PATH_TRAVERSAL_IN", justification = "paths not set by user input")
 public class MultiThreadedRFileTest {
 
-  private static final SecureRandom random = new SecureRandom();
   private static final Logger LOG = LoggerFactory.getLogger(MultiThreadedRFileTest.class);
   private static final Collection<ByteSequence> EMPTY_COL_FAMS = new ArrayList<>();
 
@@ -81,16 +81,16 @@ public class MultiThreadedRFileTest {
     if (indexIter.hasTop()) {
       Key lastKey = new Key(indexIter.getTopKey());
 
-      if (reader.getFirstKey().compareTo(lastKey) > 0) {
-        throw new RuntimeException(
-            "First key out of order " + reader.getFirstKey() + " " + lastKey);
+      if (reader.getFirstRow().compareTo(lastKey.getRow()) > 0) {
+        throw new IllegalStateException(
+            "First key out of order " + reader.getFirstRow() + " " + lastKey);
       }
 
       indexIter.next();
 
       while (indexIter.hasTop()) {
         if (lastKey.compareTo(indexIter.getTopKey()) > 0) {
-          throw new RuntimeException(
+          throw new IllegalStateException(
               "Indext out of order " + lastKey + " " + indexIter.getTopKey());
         }
 
@@ -99,8 +99,9 @@ public class MultiThreadedRFileTest {
 
       }
 
-      if (!reader.getLastKey().equals(lastKey)) {
-        throw new RuntimeException("Last key out of order " + reader.getLastKey() + " " + lastKey);
+      if (!reader.getLastRow().equals(lastKey.getRow())) {
+        throw new IllegalStateException(
+            "Last key out of order " + reader.getLastRow() + " " + lastKey);
       }
     }
   }
@@ -134,7 +135,7 @@ public class MultiThreadedRFileTest {
     public TestRFile deepCopy() throws IOException {
       TestRFile copy = new TestRFile(accumuloConfiguration);
       // does not copy any writer resources. This would be for read only.
-      copy.reader = (Reader) reader.deepCopy(null);
+      copy.reader = reader.deepCopy(null);
       copy.rfile = rfile;
       copy.iter = new ColumnFamilySkippingIterator(copy.reader);
       copy.deepCopy = true;
@@ -153,7 +154,7 @@ public class MultiThreadedRFileTest {
       FileSystem fs = FileSystem.newInstance(conf);
       Path path = new Path("file://" + rfile);
       dos = fs.create(path, true);
-      BCFile.Writer _cbw = new BCFile.Writer(dos, null, "gz", conf,
+      BCFile.Writer _cbw = new BCFile.Writer(dos, "gz", conf,
           CryptoFactoryLoader.getServiceForServer(accumuloConfiguration));
       SamplerConfigurationImpl samplerConfig =
           SamplerConfigurationImpl.newSamplerConfig(accumuloConfiguration);
@@ -198,7 +199,8 @@ public class MultiThreadedRFileTest {
   }
 
   static Key newKey(String row, String cf, String cq, String cv, long ts) {
-    return new Key(row.getBytes(), cf.getBytes(), cq.getBytes(), cv.getBytes(), ts);
+    return new Key(row.getBytes(UTF_8), cf.getBytes(UTF_8), cq.getBytes(UTF_8), cv.getBytes(UTF_8),
+        ts);
   }
 
   static Value newValue(String val) {
@@ -231,9 +233,10 @@ public class MultiThreadedRFileTest {
 
       // now start up multiple RFile deepcopies
       int maxThreads = 10;
-      String name = "MultiThreadedRFileTestThread";
-      ThreadPoolExecutor pool = ThreadPools.getServerThreadPools().createThreadPool(maxThreads + 1,
-          maxThreads + 1, 5 * 60, SECONDS, name, false);
+      String name = "test.rfile.multi.thread.pool";
+      ThreadPoolExecutor pool =
+          ThreadPools.getServerThreadPools().getPoolBuilder(name).numCoreThreads(maxThreads + 1)
+              .numMaxThreads(maxThreads + 1).withTimeOut(5, MINUTES).build();
       try {
         Runnable runnable = () -> {
           try {
@@ -285,7 +288,7 @@ public class MultiThreadedRFileTest {
   }
 
   private void validate(TestRFile trf) throws IOException {
-    random.ints(10, 0, 4).forEach(part -> {
+    RANDOM.get().ints(10, 0, 4).forEach(part -> {
       try {
         Range range = new Range(getKey(part, 0, 0), true, getKey(part, 4, 2048), true);
         trf.iter.seek(range, EMPTY_COL_FAMS, false);
