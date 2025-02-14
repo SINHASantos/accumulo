@@ -25,6 +25,7 @@ import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Set;
 import java.util.SortedSet;
 import java.util.TreeSet;
@@ -36,9 +37,8 @@ import org.apache.accumulo.core.data.Key;
 import org.apache.accumulo.core.data.TableId;
 import org.apache.accumulo.core.data.Value;
 import org.apache.accumulo.core.dataImpl.KeyExtent;
-import org.apache.accumulo.core.metadata.MetadataTable;
-import org.apache.accumulo.core.metadata.RootTable;
-import org.apache.accumulo.core.metadata.TabletFile;
+import org.apache.accumulo.core.metadata.AccumuloTable;
+import org.apache.accumulo.core.metadata.ReferencedTabletFile;
 import org.apache.accumulo.core.metadata.schema.DataFileValue;
 import org.apache.accumulo.core.metadata.schema.MetadataSchema;
 import org.apache.accumulo.core.security.Authorizations;
@@ -66,8 +66,8 @@ public class TableDiskUsageTest {
 
   @BeforeAll
   public static void beforeClass() {
-    tableIdToNameMap.put(RootTable.ID, MetadataTable.NAME);
-    tableIdToNameMap.put(MetadataTable.ID, MetadataTable.NAME);
+    tableIdToNameMap.put(AccumuloTable.ROOT.tableId(), AccumuloTable.METADATA.tableName());
+    tableIdToNameMap.put(AccumuloTable.METADATA.tableId(), AccumuloTable.METADATA.tableName());
     tableIdToNameMap.put(tableId1, "table1");
     tableIdToNameMap.put(tableId2, "table2");
     tableIdToNameMap.put(tableId3, "table3");
@@ -91,7 +91,8 @@ public class TableDiskUsageTest {
 
     assertEquals(4096, getTotalUsage(result, tableId1));
     assertEquals(1, result.size());
-    Map.Entry<SortedSet<String>,Long> firstResult = result.entrySet().stream().findFirst().get();
+    Map.Entry<SortedSet<String>,Long> firstResult =
+        result.entrySet().stream().findFirst().orElseThrow();
     assertEquals(1, firstResult.getKey().size());
     assertTrue(firstResult.getKey().contains(getTableName(tableId1)));
     assertEquals(4096, firstResult.getValue());
@@ -120,7 +121,8 @@ public class TableDiskUsageTest {
 
     assertEquals(14096, getTotalUsage(result, tableId1));
     assertEquals(1, result.size());
-    Map.Entry<SortedSet<String>,Long> firstResult = result.entrySet().stream().findFirst().get();
+    Map.Entry<SortedSet<String>,Long> firstResult =
+        result.entrySet().stream().findFirst().orElseThrow();
     assertEquals(1, firstResult.getKey().size());
     assertEquals(14096, firstResult.getValue());
 
@@ -133,22 +135,24 @@ public class TableDiskUsageTest {
     final Scanner scanner = EasyMock.createMock(Scanner.class);
 
     // Expect root table instead to be scanned
-    EasyMock.expect(client.createScanner(RootTable.NAME, Authorizations.EMPTY)).andReturn(scanner);
+    EasyMock.expect(client.createScanner(AccumuloTable.ROOT.tableName(), Authorizations.EMPTY))
+        .andReturn(scanner);
     EasyMock.expect(client.getTableIdToNameMap()).andReturn(tableIdToNameMap);
 
     Map<Key,Value> tableEntries = new HashMap<>();
-    appendFileMetadata(tableEntries,
-        getTabletFile(MetadataTable.ID, MetadataTable.NAME, "C0001.rf"), 1024);
-    mockTableScan(scanner, tableEntries, MetadataTable.ID);
+    appendFileMetadata(tableEntries, getTabletFile(AccumuloTable.METADATA.tableId(),
+        AccumuloTable.METADATA.tableName(), "C0001.rf"), 1024);
+    mockTableScan(scanner, tableEntries, AccumuloTable.METADATA.tableId());
 
     EasyMock.replay(client, scanner);
 
     Map<SortedSet<String>,Long> result =
-        TableDiskUsage.getDiskUsage(tableSet(MetadataTable.ID), client);
+        TableDiskUsage.getDiskUsage(tableSet(AccumuloTable.METADATA.tableId()), client);
 
-    assertEquals(1024, getTotalUsage(result, MetadataTable.ID));
+    assertEquals(1024, getTotalUsage(result, AccumuloTable.METADATA.tableId()));
     assertEquals(1, result.size());
-    Map.Entry<SortedSet<String>,Long> firstResult = result.entrySet().stream().findFirst().get();
+    Map.Entry<SortedSet<String>,Long> firstResult =
+        result.entrySet().stream().findFirst().orElseThrow();
     assertEquals(1024, firstResult.getValue());
 
     EasyMock.verify(client, scanner);
@@ -171,7 +175,8 @@ public class TableDiskUsageTest {
 
     assertEquals(1024, getTotalUsage(result, tableId1));
     assertEquals(1, result.size());
-    Map.Entry<SortedSet<String>,Long> firstResult = result.entrySet().stream().findFirst().get();
+    Map.Entry<SortedSet<String>,Long> firstResult =
+        result.entrySet().stream().findFirst().orElseThrow();
     assertEquals(1, firstResult.getKey().size());
     assertTrue(firstResult.getKey().contains(getTableName(tableId1)));
     assertEquals(1024, firstResult.getValue());
@@ -194,7 +199,8 @@ public class TableDiskUsageTest {
 
     assertEquals(0, getTotalUsage(result, tableId1));
     assertEquals(1, result.size());
-    Map.Entry<SortedSet<String>,Long> firstResult = result.entrySet().stream().findFirst().get();
+    Map.Entry<SortedSet<String>,Long> firstResult =
+        result.entrySet().stream().findFirst().orElseThrow();
     assertEquals(1, firstResult.getKey().size());
     assertEquals(0, firstResult.getValue());
 
@@ -263,33 +269,34 @@ public class TableDiskUsageTest {
 
   private static Long getTotalUsage(Map<SortedSet<String>,Long> result, TableId tableId) {
     return result.entrySet().stream()
-        .filter(entry -> entry.getKey().contains(getTableName(tableId)))
-        .mapToLong(entry -> entry.getValue()).sum();
+        .filter(entry -> entry.getKey().contains(getTableName(tableId))).mapToLong(Entry::getValue)
+        .sum();
   }
 
   private static String getTableName(TableId tableId) {
     return tableIdToNameMap.get(tableId);
   }
 
-  private static void appendFileMetadata(Map<Key,Value> tableEntries, TabletFile file, long size) {
-    tableEntries.put(
-        new Key(new Text(file.getTableId() + "<"),
-            MetadataSchema.TabletsSection.DataFileColumnFamily.NAME, file.getMetaInsertText()),
+  private static void appendFileMetadata(Map<Key,Value> tableEntries, ReferencedTabletFile file,
+      long size) {
+    tableEntries.put(new Key(new Text(file.getTableId() + "<"),
+        MetadataSchema.TabletsSection.DataFileColumnFamily.NAME, file.insert().getMetadataText()),
         new DataFileValue(size, 1).encodeAsValue());
   }
 
-  private static TabletFile getTabletFile(String volume, TableId tableId, String tablet,
+  private static ReferencedTabletFile getTabletFile(String volume, TableId tableId, String tablet,
       String fileName) {
-    return new TabletFile(new Path(
+    return new ReferencedTabletFile(new Path(
         volume + Constants.HDFS_TABLES_DIR + "/" + tableId + "/" + tablet + "/" + fileName));
   }
 
-  private static TabletFile getTabletFile(TableId tableId, String tablet, String fileName) {
+  private static ReferencedTabletFile getTabletFile(TableId tableId, String tablet,
+      String fileName) {
     return getTabletFile(volume1, tableId, tablet, fileName);
   }
 
   private void mockScan(ServerContext client, Scanner scanner, int times) throws Exception {
-    EasyMock.expect(client.createScanner(MetadataTable.NAME, Authorizations.EMPTY))
+    EasyMock.expect(client.createScanner(AccumuloTable.METADATA.tableName(), Authorizations.EMPTY))
         .andReturn(scanner).times(times);
     EasyMock.expect(client.getTableIdToNameMap()).andReturn(tableIdToNameMap);
   }

@@ -49,6 +49,7 @@ import java.util.stream.Collectors;
 
 import org.apache.accumulo.core.client.AccumuloException;
 import org.apache.accumulo.core.client.AccumuloSecurityException;
+import org.apache.accumulo.core.client.admin.servers.ServerId;
 import org.apache.accumulo.core.client.summary.SummarizerConfiguration;
 import org.apache.accumulo.core.clientImpl.ClientContext;
 import org.apache.accumulo.core.clientImpl.thrift.TInfo;
@@ -61,7 +62,7 @@ import org.apache.accumulo.core.dataImpl.KeyExtent;
 import org.apache.accumulo.core.dataImpl.thrift.TRowRange;
 import org.apache.accumulo.core.dataImpl.thrift.TSummaries;
 import org.apache.accumulo.core.dataImpl.thrift.TSummaryRequest;
-import org.apache.accumulo.core.metadata.TabletFile;
+import org.apache.accumulo.core.metadata.StoredTabletFile;
 import org.apache.accumulo.core.metadata.schema.TabletMetadata;
 import org.apache.accumulo.core.metadata.schema.TabletsMetadata;
 import org.apache.accumulo.core.rpc.ThriftUtil;
@@ -83,8 +84,8 @@ import org.apache.thrift.transport.TTransportException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.github.benmanes.caffeine.cache.Cache;
 import com.google.common.base.Preconditions;
-import com.google.common.cache.Cache;
 import com.google.common.hash.Hashing;
 import com.google.common.net.HostAndPort;
 
@@ -107,20 +108,20 @@ public class Gatherer {
 
   private static final Logger log = LoggerFactory.getLogger(Gatherer.class);
 
-  private ClientContext ctx;
-  private TableId tableId;
-  private SummarizerFactory factory;
+  private final ClientContext ctx;
+  private final TableId tableId;
+  private final SummarizerFactory factory;
   private Text startRow = null;
   private Text endRow = null;
-  private Range clipRange;
+  private final Range clipRange;
   private Predicate<SummarizerConfiguration> summarySelector;
-  private CryptoService cryptoService;
+  private final CryptoService cryptoService;
 
-  private TSummaryRequest request;
+  private final TSummaryRequest request;
 
-  private String summarizerPattern;
+  private final String summarizerPattern;
 
-  private Set<SummarizerConfiguration> summaries;
+  private final Set<SummarizerConfiguration> summaries;
 
   public Gatherer(ClientContext context, TSummaryRequest request, AccumuloConfiguration tableConfig,
       CryptoService cryptoService) {
@@ -163,31 +164,31 @@ public class Gatherer {
    * @return A map of the form : {@code map<tserver location, map<path, list<range>>} . The ranges
    *         associated with a file represent the tablets that use the file.
    */
-  private Map<String,Map<TabletFile,List<TRowRange>>>
-      getFilesGroupedByLocation(Predicate<TabletFile> fileSelector) {
-
-    Iterable<TabletMetadata> tmi = TabletsMetadata.builder(ctx).forTable(tableId)
-        .overlapping(startRow, endRow).fetch(FILES, LOCATION, LAST, PREV_ROW).build();
+  private Map<String,Map<StoredTabletFile,List<TRowRange>>>
+      getFilesGroupedByLocation(Predicate<StoredTabletFile> fileSelector) {
 
     // get a subset of files
-    Map<TabletFile,List<TabletMetadata>> files = new HashMap<>();
+    Map<StoredTabletFile,List<TabletMetadata>> files = new HashMap<>();
 
-    for (TabletMetadata tm : tmi) {
-      for (TabletFile file : tm.getFiles()) {
-        if (fileSelector.test(file)) {
-          // TODO push this filtering to server side and possibly use batch scanner
-          files.computeIfAbsent(file, s -> new ArrayList<>()).add(tm);
+    try (TabletsMetadata tmi = TabletsMetadata.builder(ctx).forTable(tableId)
+        .overlapping(startRow, endRow).fetch(FILES, LOCATION, LAST, PREV_ROW).build()) {
+      for (TabletMetadata tm : tmi) {
+        for (StoredTabletFile file : tm.getFiles()) {
+          if (fileSelector.test(file)) {
+            // TODO push this filtering to server side and possibly use batch scanner
+            files.computeIfAbsent(file, s -> new ArrayList<>()).add(tm);
+          }
         }
       }
     }
 
     // group by location, then file
 
-    Map<String,Map<TabletFile,List<TRowRange>>> locations = new HashMap<>();
+    Map<String,Map<StoredTabletFile,List<TRowRange>>> locations = new HashMap<>();
 
-    List<String> tservers = null;
+    List<ServerId> tservers = null;
 
-    for (Entry<TabletFile,List<TabletMetadata>> entry : files.entrySet()) {
+    for (Entry<StoredTabletFile,List<TabletMetadata>> entry : files.entrySet()) {
 
       String location = entry.getValue().stream().filter(tm -> tm.getLocation() != null) // filter
                                                                                          // tablets
@@ -203,16 +204,16 @@ public class Gatherer {
 
       if (location == null) {
         if (tservers == null) {
-          tservers = ctx.instanceOperations().getTabletServers();
+          tservers =
+              new ArrayList<>(ctx.instanceOperations().getServers(ServerId.Type.TABLET_SERVER));
           Collections.sort(tservers);
         }
 
         // When no location, the approach below will consistently choose the same tserver for the
         // same file (as long as the set of tservers is stable).
-        int idx = Math
-            .abs(Hashing.murmur3_32_fixed().hashString(entry.getKey().getPathStr(), UTF_8).asInt())
-            % tservers.size();
-        location = tservers.get(idx);
+        int idx = Math.abs(Hashing.murmur3_32_fixed()
+            .hashString(entry.getKey().getNormalizedPathStr(), UTF_8).asInt()) % tservers.size();
+        location = tservers.get(idx).toHostPortString();
       }
 
       // merge contiguous ranges
@@ -261,7 +262,7 @@ public class Gatherer {
 
   private static class ProcessedFiles {
     final SummaryCollection summaries;
-    final Set<TabletFile> failedFiles;
+    final Set<StoredTabletFile> failedFiles;
 
     public ProcessedFiles() {
       this.summaries = new SummaryCollection();
@@ -285,13 +286,13 @@ public class Gatherer {
 
   private class FilesProcessor implements Supplier<ProcessedFiles> {
 
-    HostAndPort location;
-    Map<TabletFile,List<TRowRange>> allFiles;
-    private TInfo tinfo;
-    private AtomicBoolean cancelFlag;
+    final HostAndPort location;
+    final Map<StoredTabletFile,List<TRowRange>> allFiles;
+    private final TInfo tinfo;
+    private final AtomicBoolean cancelFlag;
 
     public FilesProcessor(TInfo tinfo, HostAndPort location,
-        Map<TabletFile,List<TRowRange>> allFiles, AtomicBoolean cancelFlag) {
+        Map<StoredTabletFile,List<TRowRange>> allFiles, AtomicBoolean cancelFlag) {
       this.location = location;
       this.allFiles = allFiles;
       this.tinfo = tinfo;
@@ -306,7 +307,7 @@ public class Gatherer {
       try {
         client = ThriftUtil.getClient(ThriftClientTypes.TABLET_SERVER, location, ctx);
         // partition files into smaller chunks so that not too many are sent to a tserver at once
-        for (Map<TabletFile,List<TRowRange>> files : partition(allFiles, 500)) {
+        for (Map<StoredTabletFile,List<TRowRange>> files : partition(allFiles, 500)) {
           if (!pfiles.failedFiles.isEmpty()) {
             // there was a previous failure on this tserver, so just fail the rest of the files
             pfiles.failedFiles.addAll(files.keySet());
@@ -315,8 +316,8 @@ public class Gatherer {
 
           try {
             TSummaries tSums = client.startGetSummariesFromFiles(tinfo, ctx.rpcCreds(),
-                getRequest(), files.entrySet().stream().collect(
-                    Collectors.toMap(entry -> entry.getKey().getPathStr(), Entry::getValue)));
+                getRequest(), files.entrySet().stream().collect(Collectors
+                    .toMap(entry -> entry.getKey().getNormalizedPathStr(), Entry::getValue)));
             while (!tSums.finished && !cancelFlag.get()) {
               tSums = client.contiuneGetSummaries(tinfo, tSums.sessionId);
             }
@@ -326,7 +327,7 @@ public class Gatherer {
             pfiles.failedFiles.addAll(files.keySet());
             continue;
           } catch (TException e) {
-            throw new RuntimeException(e);
+            throw new IllegalStateException(e);
           }
 
         }
@@ -337,7 +338,7 @@ public class Gatherer {
       }
 
       if (cancelFlag.get()) {
-        throw new RuntimeException("Operation canceled");
+        throw new IllegalStateException("Operation canceled");
       }
 
       return pfiles;
@@ -350,13 +351,13 @@ public class Gatherer {
 
     PartitionFuture(TInfo tinfo, ExecutorService execSrv, int modulus, int remainder) {
       Function<ProcessedFiles,CompletableFuture<ProcessedFiles>> go = previousWork -> {
-        Predicate<TabletFile> fileSelector = file -> Math
-            .abs(Hashing.murmur3_32_fixed().hashString(file.getPathStr(), UTF_8).asInt()) % modulus
-            == remainder;
+        Predicate<StoredTabletFile> fileSelector = file -> Math
+            .abs(Hashing.murmur3_32_fixed().hashString(file.getNormalizedPathStr(), UTF_8).asInt())
+            % modulus == remainder;
         if (previousWork != null) {
           fileSelector = fileSelector.and(previousWork.failedFiles::contains);
         }
-        Map<String,Map<TabletFile,List<TRowRange>>> filesGBL;
+        Map<String,Map<StoredTabletFile,List<TRowRange>>> filesGBL;
         filesGBL = getFilesGroupedByLocation(fileSelector);
 
         List<CompletableFuture<ProcessedFiles>> futures = new ArrayList<>();
@@ -365,9 +366,9 @@ public class Gatherer {
               .completedFuture(new ProcessedFiles(previousWork.summaries, factory)));
         }
 
-        for (Entry<String,Map<TabletFile,List<TRowRange>>> entry : filesGBL.entrySet()) {
+        for (Entry<String,Map<StoredTabletFile,List<TRowRange>>> entry : filesGBL.entrySet()) {
           HostAndPort location = HostAndPort.fromString(entry.getKey());
-          Map<TabletFile,List<TRowRange>> allFiles = entry.getValue();
+          Map<StoredTabletFile,List<TRowRange>> allFiles = entry.getValue();
 
           futures.add(CompletableFuture
               .supplyAsync(new FilesProcessor(tinfo, location, allFiles, cancelFlag), execSrv));
@@ -448,16 +449,18 @@ public class Gatherer {
 
   private int countFiles() {
     // TODO use a batch scanner + iterator to parallelize counting files
-    return TabletsMetadata.builder(ctx).forTable(tableId).overlapping(startRow, endRow)
-        .fetch(FILES, PREV_ROW).build().stream().mapToInt(tm -> tm.getFiles().size()).sum();
+    try (TabletsMetadata tabletsMetadata = TabletsMetadata.builder(ctx).forTable(tableId)
+        .overlapping(startRow, endRow).fetch(FILES, PREV_ROW).build()) {
+      return tabletsMetadata.stream().mapToInt(tm -> tm.getFiles().size()).sum();
+    }
   }
 
   private class GatherRequest implements Supplier<SummaryCollection> {
 
-    private int remainder;
-    private int modulus;
-    private TInfo tinfo;
-    private AtomicBoolean cancelFlag;
+    private final int remainder;
+    private final int modulus;
+    private final TInfo tinfo;
+    private final AtomicBoolean cancelFlag;
 
     GatherRequest(TInfo tinfo, int remainder, int modulus, AtomicBoolean cancelFlag) {
       this.remainder = remainder;
@@ -481,11 +484,11 @@ public class Gatherer {
           return tsr;
         });
       } catch (AccumuloException | AccumuloSecurityException e) {
-        throw new RuntimeException(e);
+        throw new IllegalStateException(e);
       }
 
       if (cancelFlag.get()) {
-        throw new RuntimeException("Operation canceled");
+        throw new IllegalStateException("Operation canceled");
       }
 
       return new SummaryCollection(tSums);
@@ -541,8 +544,8 @@ public class Gatherer {
   }
 
   public static class RowRange {
-    private Text startRow;
-    private Text endRow;
+    private final Text startRow;
+    private final Text endRow;
 
     public RowRange(KeyExtent ke) {
       this.startRow = ke.prevEndRow();

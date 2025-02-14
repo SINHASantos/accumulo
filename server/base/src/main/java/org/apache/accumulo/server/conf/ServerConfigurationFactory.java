@@ -23,10 +23,10 @@ import static java.util.concurrent.TimeUnit.MINUTES;
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
 
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
 import org.apache.accumulo.core.client.TableNotFoundException;
@@ -36,6 +36,8 @@ import org.apache.accumulo.core.conf.DefaultConfiguration;
 import org.apache.accumulo.core.conf.SiteConfiguration;
 import org.apache.accumulo.core.data.NamespaceId;
 import org.apache.accumulo.core.data.TableId;
+import org.apache.accumulo.core.util.cache.Caches;
+import org.apache.accumulo.core.util.cache.Caches.CacheName;
 import org.apache.accumulo.core.util.threads.ThreadPools;
 import org.apache.accumulo.core.util.threads.Threads;
 import org.apache.accumulo.server.ServerContext;
@@ -48,6 +50,8 @@ import org.apache.accumulo.server.conf.store.TablePropKey;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.github.benmanes.caffeine.cache.Cache;
+
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 
 /**
@@ -56,15 +60,16 @@ import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 public class ServerConfigurationFactory extends ServerConfiguration {
   private final static Logger log = LoggerFactory.getLogger(ServerConfigurationFactory.class);
 
+  // cache expiration is used to remove configurations after deletion, not time sensitive
+  private static final int CACHE_EXPIRATION_HRS = 1;
   private final Supplier<SystemConfiguration> systemConfig;
-  private final Map<TableId,NamespaceConfiguration> tableParentConfigs = new ConcurrentHashMap<>();
-  private final Map<TableId,TableConfiguration> tableConfigs = new ConcurrentHashMap<>();
-  private final Map<NamespaceId,NamespaceConfiguration> namespaceConfigs =
-      new ConcurrentHashMap<>();
+  private final Cache<TableId,NamespaceConfiguration> tableParentConfigs;
+  private final Cache<TableId,TableConfiguration> tableConfigs;
+  private final Cache<NamespaceId,NamespaceConfiguration> namespaceConfigs;
 
   private final ServerContext context;
   private final SiteConfiguration siteConfig;
-  private final DeleteWatcher deleteWatcher = new DeleteWatcher();
+  private final ChangeWatcher changeWatcher = new ChangeWatcher();
 
   private static final int REFRESH_PERIOD_MINUTES = 15;
 
@@ -75,6 +80,13 @@ public class ServerConfigurationFactory extends ServerConfiguration {
     this.siteConfig = siteConfig;
     this.systemConfig = memoize(() -> new SystemConfiguration(context,
         SystemPropKey.of(context.getInstanceID()), siteConfig));
+    tableParentConfigs =
+        Caches.getInstance().createNewBuilder(CacheName.TABLE_PARENT_CONFIGS, false)
+            .expireAfterAccess(CACHE_EXPIRATION_HRS, TimeUnit.HOURS).build();
+    tableConfigs = Caches.getInstance().createNewBuilder(CacheName.TABLE_CONFIGS, false)
+        .expireAfterAccess(CACHE_EXPIRATION_HRS, TimeUnit.HOURS).build();
+    namespaceConfigs = Caches.getInstance().createNewBuilder(CacheName.NAMESPACE_CONFIGS, false)
+        .expireAfterAccess(CACHE_EXPIRATION_HRS, TimeUnit.HOURS).build();
 
     refresher = new ConfigRefreshRunner();
     Runtime.getRuntime()
@@ -100,9 +112,9 @@ public class ServerConfigurationFactory extends ServerConfiguration {
 
   @Override
   public TableConfiguration getTableConfiguration(TableId tableId) {
-    return tableConfigs.computeIfAbsent(tableId, key -> {
+    return tableConfigs.get(tableId, key -> {
       if (context.tableNodeExists(tableId)) {
-        context.getPropStore().registerAsListener(TablePropKey.of(context, tableId), deleteWatcher);
+        context.getPropStore().registerAsListener(TablePropKey.of(context, tableId), changeWatcher);
         var conf =
             new TableConfiguration(context, tableId, getNamespaceConfigurationForTable(tableId));
         ConfigCheckUtil.validate(conf, "table id: " + tableId.toString());
@@ -118,46 +130,52 @@ public class ServerConfigurationFactory extends ServerConfiguration {
     try {
       namespaceId = context.getNamespaceId(tableId);
     } catch (TableNotFoundException e) {
-      throw new RuntimeException(e);
+      throw new IllegalStateException(e);
     }
-    return tableParentConfigs.computeIfAbsent(tableId,
-        key -> getNamespaceConfiguration(namespaceId));
+    return tableParentConfigs.get(tableId, key -> getNamespaceConfiguration(namespaceId));
   }
 
   @Override
   public NamespaceConfiguration getNamespaceConfiguration(NamespaceId namespaceId) {
-    return namespaceConfigs.computeIfAbsent(namespaceId, key -> {
+    return namespaceConfigs.get(namespaceId, key -> {
       context.getPropStore().registerAsListener(NamespacePropKey.of(context, namespaceId),
-          deleteWatcher);
+          changeWatcher);
       var conf = new NamespaceConfiguration(context, namespaceId, getSystemConfiguration());
       ConfigCheckUtil.validate(conf, "namespace id: " + namespaceId.toString());
       return conf;
     });
   }
 
-  private class DeleteWatcher implements PropChangeListener {
+  private class ChangeWatcher implements PropChangeListener {
 
     @Override
     public void zkChangeEvent(PropStoreKey<?> propStoreKey) {
-      // no-op. changes handled by prop store impl
+      clearLocalOnEvent(propStoreKey);
     }
 
     @Override
     public void cacheChangeEvent(PropStoreKey<?> propStoreKey) {
-      // no-op. changes handled by prop store impl
+      clearLocalOnEvent(propStoreKey);
     }
 
     @Override
     public void deleteEvent(PropStoreKey<?> propStoreKey) {
+      clearLocalOnEvent(propStoreKey);
+    }
+
+    private void clearLocalOnEvent(PropStoreKey<?> propStoreKey) {
+      // clearing the local secondary cache stored in this class forces a re-read from the prop
+      // store
+      // to guarantee that the updated vales(s) are re-read on a ZooKeeper change.
       if (propStoreKey instanceof NamespacePropKey) {
-        log.trace("configuration snapshot refresh: Handle namespace delete for {}", propStoreKey);
-        namespaceConfigs.remove(((NamespacePropKey) propStoreKey).getId());
+        log.trace("configuration snapshot refresh: Handle namespace change for {}", propStoreKey);
+        namespaceConfigs.invalidate(((NamespacePropKey) propStoreKey).getId());
         return;
       }
       if (propStoreKey instanceof TablePropKey) {
-        log.trace("configuration snapshot refresh: Handle table delete for {}", propStoreKey);
-        tableConfigs.remove(((TablePropKey) propStoreKey).getId());
-        tableParentConfigs.remove(((TablePropKey) propStoreKey).getId());
+        log.trace("configuration snapshot refresh: Handle table change for {}", propStoreKey);
+        tableConfigs.invalidate(((TablePropKey) propStoreKey).getId());
+        tableParentConfigs.invalidate(((TablePropKey) propStoreKey).getId());
       }
     }
 
@@ -176,8 +194,8 @@ public class ServerConfigurationFactory extends ServerConfiguration {
 
       Runnable refreshTask = this::verifySnapshotVersions;
 
-      ScheduledThreadPoolExecutor executor = ThreadPools.getServerThreadPools()
-          .createScheduledExecutorService(1, "config-refresh", false);
+      ScheduledThreadPoolExecutor executor =
+          ThreadPools.getServerThreadPools().createScheduledExecutorService(1, "config-refresh");
 
       // scheduleWithFixedDelay - used so only one task will run concurrently.
       // staggering the initial delay prevents synchronization of Accumulo servers communicating
@@ -210,25 +228,26 @@ public class ServerConfigurationFactory extends ServerConfiguration {
       // small yield - spread out ZooKeeper calls
       jitterDelay();
 
-      for (Map.Entry<NamespaceId,NamespaceConfiguration> entry : namespaceConfigs.entrySet()) {
+      for (Map.Entry<NamespaceId,NamespaceConfiguration> entry : namespaceConfigs.asMap()
+          .entrySet()) {
         keyCount++;
         PropStoreKey<?> propKey = NamespacePropKey.of(context, entry.getKey());
         if (!propStore.validateDataVersion(propKey, entry.getValue().getDataVersion())) {
           keyChangedCount++;
-          namespaceConfigs.remove(entry.getKey());
+          namespaceConfigs.invalidate(entry.getKey());
         }
         // small yield - spread out ZooKeeper calls between namespace config checks
         jitterDelay();
       }
 
-      for (Map.Entry<TableId,TableConfiguration> entry : tableConfigs.entrySet()) {
+      for (Map.Entry<TableId,TableConfiguration> entry : tableConfigs.asMap().entrySet()) {
         keyCount++;
         TableId tid = entry.getKey();
         PropStoreKey<?> propKey = TablePropKey.of(context, tid);
         if (!propStore.validateDataVersion(propKey, entry.getValue().getDataVersion())) {
           keyChangedCount++;
-          tableConfigs.remove(tid);
-          tableParentConfigs.remove(tid);
+          tableConfigs.invalidate(tid);
+          tableParentConfigs.invalidate(tid);
           log.debug("data version sync: difference found. forcing configuration update for {}}",
               propKey);
         }

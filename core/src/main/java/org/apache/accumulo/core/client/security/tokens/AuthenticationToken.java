@@ -23,6 +23,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
@@ -115,7 +116,7 @@ public interface AuthenticationToken extends Writable, Destroyable, Cloneable {
         token.write(out);
         return baos.toByteArray();
       } catch (IOException e) {
-        throw new RuntimeException("Bug found in serialization code", e);
+        throw new UncheckedIOException("Bug found in serialization code", e);
       }
     }
   }
@@ -123,7 +124,7 @@ public interface AuthenticationToken extends Writable, Destroyable, Cloneable {
   class Properties implements Destroyable, Map<String,char[]> {
 
     private boolean destroyed = false;
-    private HashMap<String,char[]> map = new HashMap<>();
+    private final HashMap<String,char[]> map = new HashMap<>();
 
     private void checkDestroyed() {
       if (destroyed) {
@@ -240,8 +241,9 @@ public interface AuthenticationToken extends Writable, Destroyable, Cloneable {
   }
 
   class TokenProperty implements Comparable<TokenProperty> {
-    private String key, description;
-    private boolean masked;
+    private final String key;
+    private final String description;
+    private final boolean masked;
 
     public TokenProperty(String name, String description, boolean mask) {
       this.key = name;

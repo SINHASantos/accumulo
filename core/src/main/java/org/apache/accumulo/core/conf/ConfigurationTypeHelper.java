@@ -24,7 +24,6 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.MINUTES;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
-import java.io.IOException;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -155,7 +154,7 @@ public class ConfigurationTypeHelper {
   }
 
   // This is not a cache for loaded classes, just a way to avoid spamming the debug log
-  private static Map<String,Class<?>> loaded = Collections.synchronizedMap(new HashMap<>());
+  private static final Map<String,Class<?>> loaded = Collections.synchronizedMap(new HashMap<>());
 
   /**
    * Loads a class in the given classloader context, suppressing any exceptions, and optionally
@@ -173,12 +172,13 @@ public class ConfigurationTypeHelper {
 
     try {
       instance = getClassInstance(context, clazzName, base);
-    } catch (RuntimeException | IOException | ReflectiveOperationException e) {
-      log.warn("Failed to load class {} in classloader context {}", clazzName, context, e);
+    } catch (RuntimeException | ReflectiveOperationException e) {
+      log.error("Failed to load class {} in classloader context {}", clazzName, context, e);
     }
 
-    if (instance == null && defaultInstance != null) {
-      log.info("Using default class {}", defaultInstance.getClass().getName());
+    if (instance == null) {
+      log.info("Using default class ({})",
+          defaultInstance == null ? null : defaultInstance.getClass().getName());
       instance = defaultInstance;
     }
     return instance;
@@ -193,7 +193,7 @@ public class ConfigurationTypeHelper {
    * @return a new instance of the class
    */
   public static <T> T getClassInstance(String context, String clazzName, Class<T> base)
-      throws IOException, ReflectiveOperationException {
+      throws ReflectiveOperationException {
     T instance;
 
     Class<? extends T> clazz = ClassLoaderUtil.loadClass(context, clazzName, base);

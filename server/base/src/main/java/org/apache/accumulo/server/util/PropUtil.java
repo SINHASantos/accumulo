@@ -21,6 +21,7 @@ package org.apache.accumulo.server.util;
 import java.util.Collection;
 import java.util.Map;
 
+import org.apache.accumulo.core.classloader.ClassLoaderUtil;
 import org.apache.accumulo.core.conf.Property;
 import org.apache.accumulo.server.ServerContext;
 import org.apache.accumulo.server.conf.store.PropStoreKey;
@@ -65,6 +66,13 @@ public final class PropUtil {
         }
         throw new IllegalArgumentException(exceptionMessage + propStoreKey + " name: "
             + prop.getKey() + ", value: " + prop.getValue());
+      } else if (prop.getKey().equals(Property.TABLE_CLASSLOADER_CONTEXT.getKey())
+          && !Property.TABLE_CLASSLOADER_CONTEXT.getDefaultValue().equals(prop.getValue())) {
+        ClassLoaderUtil.initContextFactory(context.getConfiguration());
+        if (!ClassLoaderUtil.isValidContext(prop.getValue())) {
+          throw new IllegalArgumentException(
+              "Unable to resolve classloader for context: " + prop.getValue());
+        }
       }
     }
   }

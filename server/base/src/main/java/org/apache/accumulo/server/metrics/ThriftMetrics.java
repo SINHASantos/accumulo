@@ -18,6 +18,9 @@
  */
 package org.apache.accumulo.server.metrics;
 
+import static org.apache.accumulo.core.metrics.Metric.THRIFT_EXECUTE;
+import static org.apache.accumulo.core.metrics.Metric.THRIFT_IDLE;
+
 import org.apache.accumulo.core.metrics.MetricsProducer;
 
 import io.micrometer.core.instrument.DistributionSummary;
@@ -25,15 +28,10 @@ import io.micrometer.core.instrument.MeterRegistry;
 
 public class ThriftMetrics implements MetricsProducer {
 
-  private final String serverName;
-  private final String threadName;
-  private DistributionSummary idle;
-  private DistributionSummary execute;
+  private DistributionSummary idle = NoopMetrics.useNoopDistributionSummary();
+  private DistributionSummary execute = NoopMetrics.useNoopDistributionSummary();
 
-  public ThriftMetrics(String serverName, String threadName) {
-    this.serverName = serverName;
-    this.threadName = threadName;
-  }
+  public ThriftMetrics() {}
 
   public void addIdle(long time) {
     idle.record(time);
@@ -45,10 +43,10 @@ public class ThriftMetrics implements MetricsProducer {
 
   @Override
   public void registerMetrics(MeterRegistry registry) {
-    idle = DistributionSummary.builder(METRICS_THRIFT_IDLE).baseUnit("ms")
-        .tags("server", serverName, "thread", threadName).register(registry);
-    execute = DistributionSummary.builder(METRICS_THRIFT_EXECUTE).baseUnit("ms")
-        .tags("server", serverName, "thread", threadName).register(registry);
+    idle = DistributionSummary.builder(THRIFT_IDLE.getName()).baseUnit("ms")
+        .description(THRIFT_IDLE.getDescription()).register(registry);
+    execute = DistributionSummary.builder(THRIFT_EXECUTE.getName()).baseUnit("ms")
+        .description(THRIFT_EXECUTE.getDescription()).register(registry);
   }
 
 }

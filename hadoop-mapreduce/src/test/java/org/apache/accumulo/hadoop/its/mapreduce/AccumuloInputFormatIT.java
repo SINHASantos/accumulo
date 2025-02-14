@@ -18,8 +18,8 @@
  */
 package org.apache.accumulo.hadoop.its.mapreduce;
 
-import static com.google.common.util.concurrent.Uninterruptibles.sleepUninterruptibly;
 import static java.lang.System.currentTimeMillis;
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -33,7 +33,6 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.TreeSet;
-import java.util.concurrent.TimeUnit;
 
 import org.apache.accumulo.core.client.Accumulo;
 import org.apache.accumulo.core.client.AccumuloClient;
@@ -91,7 +90,7 @@ public class AccumuloInputFormatIT extends AccumuloClusterHarness {
 
   @Override
   public void configureMiniCluster(MiniAccumuloConfigImpl cfg, Configuration hadoopCoreSite) {
-    cfg.setNumTservers(1);
+    cfg.getClusterServerConfiguration().setNumDefaultTabletServers(1);
   }
 
   @BeforeEach
@@ -125,7 +124,7 @@ public class AccumuloInputFormatIT extends AccumuloClusterHarness {
       splitsToAdd.add(new Text(String.format("%09d", i)));
     }
     client.tableOperations().addSplits(table, splitsToAdd);
-    sleepUninterruptibly(500, TimeUnit.MILLISECONDS); // wait for splits to be propagated
+    Thread.sleep(500); // wait for splits to be propagated
 
     // get splits without setting any range
     // No ranges set on the job so it'll start with -inf
@@ -205,7 +204,7 @@ public class AccumuloInputFormatIT extends AccumuloClusterHarness {
     // Check we are getting back correct type pf split
     splits = inputFormat.getSplits(job);
     for (InputSplit split : splits) {
-      assert (split instanceof BatchInputSplit);
+      assertTrue(split instanceof BatchInputSplit);
     }
 
     // We should split along the tablet lines
@@ -243,10 +242,10 @@ public class AccumuloInputFormatIT extends AccumuloClusterHarness {
         assertNotNull(table);
         try {
           if (key != null) {
-            assertEquals(key.getRow().toString(), new String(v.get()));
+            assertEquals(key.getRow().toString(), new String(v.get(), UTF_8));
           }
           assertEquals(k.getRow(), new Text(String.format("%09x", count + 1)));
-          assertEquals(new String(v.get()), String.format("%09x", count));
+          assertEquals(new String(v.get(), UTF_8), String.format("%09x", count));
         } catch (AssertionError e) {
           assertionErrors.put(table + "_map", e);
         }

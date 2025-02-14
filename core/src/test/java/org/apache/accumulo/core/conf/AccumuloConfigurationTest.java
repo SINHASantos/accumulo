@@ -27,6 +27,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.reflect.Field;
+import java.time.Duration;
+import java.time.temporal.ChronoUnit;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
@@ -304,11 +306,11 @@ public class AccumuloConfigurationTest {
     assertEquals(2, executors.size());
 
     ScanExecutorConfig sec =
-        executors.stream().filter(c -> c.name.equals(defName)).findFirst().get();
+        executors.stream().filter(c -> c.name.equals(defName)).findFirst().orElseThrow();
     assertEquals(Integer.parseInt(Property.TSERV_SCAN_EXECUTORS_DEFAULT_THREADS.getDefaultValue()),
         sec.maxThreads);
     assertFalse(sec.priority.isPresent());
-    assertTrue(sec.prioritizerClass.get().isEmpty());
+    assertTrue(sec.prioritizerClass.orElseThrow().isEmpty());
     assertTrue(sec.prioritizerOpts.isEmpty());
 
     // ensure new props override default props
@@ -316,12 +318,12 @@ public class AccumuloConfigurationTest {
     assertEquals(9, sec.getCurrentMaxThreads());
     assertEquals(Integer.parseInt(Property.TSERV_SCAN_EXECUTORS_DEFAULT_THREADS.getDefaultValue()),
         sec.maxThreads);
-    ScanExecutorConfig sec3 =
-        tc.getScanExecutors(false).stream().filter(c -> c.name.equals(defName)).findFirst().get();
+    ScanExecutorConfig sec3 = tc.getScanExecutors(false).stream()
+        .filter(c -> c.name.equals(defName)).findFirst().orElseThrow();
     assertEquals(9, sec3.maxThreads);
 
     ScanExecutorConfig sec4 =
-        executors.stream().filter(c -> c.name.equals("meta")).findFirst().get();
+        executors.stream().filter(c -> c.name.equals("meta")).findFirst().orElseThrow();
     assertEquals(Integer.parseInt(Property.TSERV_SCAN_EXECUTORS_META_THREADS.getDefaultValue()),
         sec4.maxThreads);
     assertFalse(sec4.priority.isPresent());
@@ -330,14 +332,14 @@ public class AccumuloConfigurationTest {
 
     tc.set(Property.TSERV_SCAN_EXECUTORS_META_THREADS.getKey(), "2");
     assertEquals(2, sec4.getCurrentMaxThreads());
-    ScanExecutorConfig sec5 =
-        tc.getScanExecutors(false).stream().filter(c -> c.name.equals("meta")).findFirst().get();
+    ScanExecutorConfig sec5 = tc.getScanExecutors(false).stream().filter(c -> c.name.equals("meta"))
+        .findFirst().orElseThrow();
     assertEquals(2, sec5.maxThreads);
 
     tc.set(Property.TSERV_SCAN_EXECUTORS_META_THREADS.getKey(), "3");
     assertEquals(3, sec4.getCurrentMaxThreads());
-    ScanExecutorConfig sec6 =
-        tc.getScanExecutors(false).stream().filter(c -> c.name.equals("meta")).findFirst().get();
+    ScanExecutorConfig sec6 = tc.getScanExecutors(false).stream().filter(c -> c.name.equals("meta"))
+        .findFirst().orElseThrow();
     assertEquals(3, sec6.maxThreads);
 
     String prefix = Property.TSERV_SCAN_EXECUTORS_PREFIX.getKey();
@@ -350,10 +352,10 @@ public class AccumuloConfigurationTest {
     executors = tc.getScanExecutors(false);
     assertEquals(3, executors.size());
     ScanExecutorConfig sec7 =
-        executors.stream().filter(c -> c.name.equals("hulksmash")).findFirst().get();
+        executors.stream().filter(c -> c.name.equals("hulksmash")).findFirst().orElseThrow();
     assertEquals(66, sec7.maxThreads);
     assertEquals(3, sec7.priority.getAsInt());
-    assertEquals("com.foo.ScanPrioritizer", sec7.prioritizerClass.get());
+    assertEquals("com.foo.ScanPrioritizer", sec7.prioritizerClass.orElseThrow());
     assertEquals(Map.of("k1", "v1", "k2", "v3"), sec7.prioritizerOpts);
 
     tc.set(prefix + "hulksmash.threads", "44");
@@ -361,7 +363,7 @@ public class AccumuloConfigurationTest {
     assertEquals(44, sec7.getCurrentMaxThreads());
 
     ScanExecutorConfig sec8 = tc.getScanExecutors(false).stream()
-        .filter(c -> c.name.equals("hulksmash")).findFirst().get();
+        .filter(c -> c.name.equals("hulksmash")).findFirst().orElseThrow();
     assertEquals(44, sec8.maxThreads);
 
     // test scan server props
@@ -369,16 +371,16 @@ public class AccumuloConfigurationTest {
     Collection<ScanExecutorConfig> scanServExecutors = tc.getScanExecutors(true);
     assertEquals(2, scanServExecutors.size());
     ScanExecutorConfig sec9 =
-        scanServExecutors.stream().filter(c -> c.name.equals(defName)).findFirst().get();
+        scanServExecutors.stream().filter(c -> c.name.equals(defName)).findFirst().orElseThrow();
     // verify set to 6
     assertEquals(6, sec9.maxThreads);
     assertFalse(sec9.priority.isPresent());
-    assertTrue(sec9.prioritizerClass.get().isEmpty());
+    assertTrue(sec9.prioritizerClass.orElseThrow().isEmpty());
     assertTrue(sec9.prioritizerOpts.isEmpty());
 
     tc.set(Property.SSERV_SCAN_EXECUTORS_DEFAULT_THREADS.getKey(), "17");
-    ScanExecutorConfig sec10 =
-        tc.getScanExecutors(true).stream().filter(c -> c.name.equals(defName)).findFirst().get();
+    ScanExecutorConfig sec10 = tc.getScanExecutors(true).stream()
+        .filter(c -> c.name.equals(defName)).findFirst().orElseThrow();
     assertEquals(17, sec10.maxThreads);
   }
 
@@ -445,4 +447,105 @@ public class AccumuloConfigurationTest {
     }
   }
 
+  @Test
+  public void testDefaultDurations() {
+    var conf = DefaultConfiguration.getInstance();
+    for (Property prop : Property.values()) {
+      if (prop.getType() == PropertyType.TIMEDURATION) {
+        var expectedDuration =
+            Duration.ofMillis(ConfigurationTypeHelper.getTimeInMillis(prop.getDefaultValue()));
+        assertEquals(expectedDuration, conf.getDuration(prop));
+        assertEquals(expectedDuration.toMillis(), conf.getTimeInMillis(prop));
+      }
+    }
+  }
+
+  /*
+   * AccumuloConfiguration will cache the results of computing durations, this test ensures it
+   * recomputes them on change.
+   */
+  @Test
+  public void testDurationUpdate() {
+    var conf = new ConfigurationCopy(DefaultConfiguration.getInstance());
+
+    for (Property prop : Property.values()) {
+      if (prop.getType() == PropertyType.TIMEDURATION) {
+        var expectedDuration =
+            Duration.ofMillis(ConfigurationTypeHelper.getTimeInMillis(prop.getDefaultValue()));
+        assertEquals(expectedDuration, conf.getDuration(prop));
+        assertEquals(expectedDuration.toMillis(), conf.getTimeInMillis(prop));
+      }
+    }
+
+    for (int toAdd = 1; toAdd <= 4; toAdd++) {
+      for (Property prop : Property.values()) {
+        if (prop.getType() == PropertyType.TIMEDURATION) {
+          var defaultDuration =
+              Duration.ofMillis(ConfigurationTypeHelper.getTimeInMillis(prop.getDefaultValue()));
+          var expectedDuration = defaultDuration.plusMinutes(toAdd);
+          conf.set(prop.getKey(), expectedDuration.toMillis() + "ms");
+        }
+      }
+
+      for (Property prop : Property.values()) {
+        if (prop.getType() == PropertyType.TIMEDURATION) {
+          var defaultDuration =
+              Duration.ofMillis(ConfigurationTypeHelper.getTimeInMillis(prop.getDefaultValue()));
+          var expectedDuration = defaultDuration.plus(toAdd, ChronoUnit.MINUTES);
+          assertEquals(expectedDuration, conf.getDuration(prop));
+          assertEquals(expectedDuration.toMillis(), conf.getTimeInMillis(prop));
+        }
+      }
+    }
+  }
+
+  @Test
+  public void testMalformedDuration() {
+    assertEquals(PropertyType.TIMEDURATION, Property.TSERV_WAL_MAX_AGE.getType());
+    assertEquals(PropertyType.TIMEDURATION, Property.GENERAL_RPC_TIMEOUT.getType());
+
+    var conf = new ConfigurationCopy(DefaultConfiguration.getInstance());
+    conf.getDuration(Property.TSERV_WAL_MAX_AGE);
+    var expectedDuration = Duration.ofMillis(
+        ConfigurationTypeHelper.getTimeInMillis(Property.TSERV_WAL_MAX_AGE.getDefaultValue()));
+    var rpcTimeout = Duration.ofMillis(
+        ConfigurationTypeHelper.getTimeInMillis(Property.GENERAL_RPC_TIMEOUT.getDefaultValue()));
+    assertEquals(expectedDuration, conf.getDuration(Property.TSERV_WAL_MAX_AGE));
+    assertEquals(rpcTimeout, conf.getDuration(Property.GENERAL_RPC_TIMEOUT));
+    conf.set(Property.TSERV_WAL_MAX_AGE.getKey(), "abc");
+    conf.set(Property.GENERAL_RPC_TIMEOUT, "2h");
+    var npe = assertThrows(NullPointerException.class,
+        () -> conf.getDuration(Property.TSERV_WAL_MAX_AGE));
+    assertTrue(npe.getMessage().contains(Property.TSERV_WAL_MAX_AGE.getKey()));
+    assertEquals(Duration.ofHours(2), conf.getDuration(Property.GENERAL_RPC_TIMEOUT));
+    conf.set(Property.TSERV_WAL_MAX_AGE.getKey(), "1h");
+    assertEquals(Duration.ofHours(1), conf.getDuration(Property.TSERV_WAL_MAX_AGE));
+    assertEquals(Duration.ofHours(2), conf.getDuration(Property.GENERAL_RPC_TIMEOUT));
+  }
+
+  @Test
+  public void testDurationSubset() {
+    // test only having some of the duration properties actually set in the configuration
+    assertEquals(PropertyType.TIMEDURATION, Property.TSERV_WAL_MAX_AGE.getType());
+    assertEquals(PropertyType.TIMEDURATION, Property.GENERAL_RPC_TIMEOUT.getType());
+
+    var conf = new ConfigurationCopy();
+    var npe = assertThrows(NullPointerException.class,
+        () -> conf.getDuration(Property.TSERV_WAL_MAX_AGE));
+    assertTrue(npe.getMessage().contains(Property.TSERV_WAL_MAX_AGE.getKey()));
+    npe = assertThrows(NullPointerException.class,
+        () -> conf.getTimeInMillis(Property.TSERV_WAL_MAX_AGE));
+    assertTrue(npe.getMessage().contains(Property.TSERV_WAL_MAX_AGE.getKey()));
+
+    conf.set(Property.TSERV_WAL_MAX_AGE.getKey(), "1h");
+    assertEquals(Duration.ofHours(1), conf.getDuration(Property.TSERV_WAL_MAX_AGE));
+    assertEquals(Duration.ofHours(1).toMillis(), conf.getTimeInMillis(Property.TSERV_WAL_MAX_AGE));
+
+    assertThrows(NullPointerException.class, () -> conf.getDuration(Property.GENERAL_RPC_TIMEOUT));
+    assertThrows(NullPointerException.class,
+        () -> conf.getTimeInMillis(Property.GENERAL_RPC_TIMEOUT));
+
+    assertEquals(Duration.ofHours(1), conf.getDuration(Property.TSERV_WAL_MAX_AGE));
+    assertEquals(Duration.ofHours(1).toMillis(), conf.getTimeInMillis(Property.TSERV_WAL_MAX_AGE));
+  }
 }

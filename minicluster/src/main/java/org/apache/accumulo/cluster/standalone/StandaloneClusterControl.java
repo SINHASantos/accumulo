@@ -34,8 +34,6 @@ import java.util.Map.Entry;
 import org.apache.accumulo.cluster.ClusterControl;
 import org.apache.accumulo.cluster.RemoteShell;
 import org.apache.accumulo.cluster.RemoteShellOptions;
-import org.apache.accumulo.compactor.Compactor;
-import org.apache.accumulo.coordinator.CompactionCoordinator;
 import org.apache.accumulo.core.manager.thrift.ManagerGoalState;
 import org.apache.accumulo.manager.state.SetGoalState;
 import org.apache.accumulo.minicluster.ServerType;
@@ -149,7 +147,8 @@ public class StandaloneClusterControl implements ClusterControl {
    */
   public void setGoalState(String goalState) throws IOException {
     requireNonNull(goalState, "Goal state must not be null");
-    checkArgument(ManagerGoalState.valueOf(goalState) != null, "Unknown goal state: " + goalState);
+    checkArgument(ManagerGoalState.valueOf(goalState) != null,
+        "Unknown availability state: " + goalState);
     String manager = getHosts(MANAGER_HOSTS_FILE).get(0);
     String[] cmd = {serverCmdPrefix, accumuloPath, SetGoalState.class.getName(), goalState};
     Entry<Integer,String> pair = exec(manager, cmd);
@@ -160,7 +159,6 @@ public class StandaloneClusterControl implements ClusterControl {
   }
 
   @Override
-  @SuppressWarnings("removal")
   public void startAllServers(ServerType server) throws IOException {
     switch (server) {
       case TABLET_SERVER:
@@ -168,7 +166,6 @@ public class StandaloneClusterControl implements ClusterControl {
           start(server, tserver);
         }
         break;
-      case MASTER:
       case MANAGER:
         for (String manager : getHosts(MANAGER_HOSTS_FILE)) {
           start(server, manager);
@@ -209,7 +206,6 @@ public class StandaloneClusterControl implements ClusterControl {
   }
 
   @Override
-  @SuppressWarnings("removal")
   public void stopAllServers(ServerType server) throws IOException {
     switch (server) {
       case TABLET_SERVER:
@@ -217,7 +213,6 @@ public class StandaloneClusterControl implements ClusterControl {
           stop(server, tserver);
         }
         break;
-      case MASTER:
       case MANAGER:
         for (String manager : getHosts(MANAGER_HOSTS_FILE)) {
           stop(server, manager);
@@ -311,14 +306,12 @@ public class StandaloneClusterControl implements ClusterControl {
         "'{print \\$2}'", "|", "head", "-1", "|", "tr", "-d", "'\\n'"};
   }
 
-  @SuppressWarnings("removal")
   protected String getProcessString(ServerType server) {
     switch (server) {
       case TABLET_SERVER:
         return "tserver";
       case GARBAGE_COLLECTOR:
         return "gc";
-      case MASTER:
       case MANAGER:
         return "manager";
       case MONITOR:
@@ -375,15 +368,4 @@ public class StandaloneClusterControl implements ClusterControl {
     }
   }
 
-  @Override
-  public void startCompactors(Class<? extends Compactor> compactor, int limit, String queueName)
-      throws IOException {
-    throw new UnsupportedOperationException("Not yet implemented.");
-  }
-
-  @Override
-  public void startCoordinator(Class<? extends CompactionCoordinator> coordinator)
-      throws IOException {
-    throw new UnsupportedOperationException("Not yet implemented.");
-  }
 }

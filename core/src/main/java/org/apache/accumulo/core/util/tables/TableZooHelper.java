@@ -25,31 +25,34 @@ import static org.apache.accumulo.core.util.Validators.EXISTING_TABLE_NAME;
 
 import java.util.List;
 import java.util.Objects;
-import java.util.concurrent.ExecutionException;
 
 import org.apache.accumulo.core.Constants;
 import org.apache.accumulo.core.client.NamespaceNotFoundException;
 import org.apache.accumulo.core.client.TableNotFoundException;
 import org.apache.accumulo.core.clientImpl.ClientContext;
+import org.apache.accumulo.core.clientImpl.Namespace;
 import org.apache.accumulo.core.clientImpl.Namespaces;
 import org.apache.accumulo.core.data.NamespaceId;
 import org.apache.accumulo.core.data.TableId;
-import org.apache.accumulo.core.fate.zookeeper.ZooCache;
 import org.apache.accumulo.core.manager.state.tables.TableState;
+import org.apache.accumulo.core.metadata.AccumuloTable;
+import org.apache.accumulo.core.util.cache.Caches.CacheName;
+import org.apache.accumulo.core.zookeeper.ZooCache;
 
-import com.google.common.cache.Cache;
-import com.google.common.cache.CacheBuilder;
+import com.github.benmanes.caffeine.cache.Cache;
 
 public class TableZooHelper implements AutoCloseable {
 
   private final ClientContext context;
   // Per instance cache will expire after 10 minutes in case we
   // encounter an instance not used frequently
-  private final Cache<TableZooHelper,TableMap> instanceToMapCache =
-      CacheBuilder.newBuilder().expireAfterAccess(10, MINUTES).build();
+  private final Cache<TableZooHelper,TableMap> instanceToMapCache;
 
   public TableZooHelper(ClientContext context) {
     this.context = Objects.requireNonNull(context);
+    instanceToMapCache =
+        this.context.getCaches().createNewBuilder(CacheName.TABLE_ZOO_HELPER_CACHE, true)
+            .expireAfterAccess(10, MINUTES).build();
   }
 
   /**
@@ -59,6 +62,11 @@ public class TableZooHelper implements AutoCloseable {
    *         getCause() of NamespaceNotFoundException
    */
   public TableId getTableId(String tableName) throws TableNotFoundException {
+    for (AccumuloTable systemTable : AccumuloTable.values()) {
+      if (systemTable.tableName().equals(tableName)) {
+        return systemTable.tableId();
+      }
+    }
     try {
       return _getTableIdDetectNamespaceNotFound(EXISTING_TABLE_NAME.validate(tableName));
     } catch (NamespaceNotFoundException e) {
@@ -90,6 +98,11 @@ public class TableZooHelper implements AutoCloseable {
   }
 
   public String getTableName(TableId tableId) throws TableNotFoundException {
+    for (AccumuloTable systemTable : AccumuloTable.values()) {
+      if (systemTable.tableId().equals(tableId)) {
+        return systemTable.tableName();
+      }
+    }
     String tableName = getTableMap().getIdtoNameMap().get(tableId);
     if (tableName == null) {
       throw new TableNotFoundException(tableId.canonical(), null, null);
@@ -112,11 +125,7 @@ public class TableZooHelper implements AutoCloseable {
   }
 
   private TableMap getCachedTableMap() {
-    try {
-      return instanceToMapCache.get(this, () -> new TableMap(context));
-    } catch (ExecutionException e) {
-      throw new RuntimeException(e);
-    }
+    return instanceToMapCache.get(this, k -> new TableMap(context));
   }
 
   public boolean tableNodeExists(TableId tableId) {
@@ -164,7 +173,7 @@ public class TableZooHelper implements AutoCloseable {
     String statePath = context.getZooKeeperRoot() + Constants.ZTABLES + "/" + tableId.canonical()
         + Constants.ZTABLE_STATE;
     if (clearCachedState) {
-      context.getZooCache().clear(context.getZooKeeperRoot() + statePath);
+      context.getZooCache().clear(statePath);
       instanceToMapCache.invalidateAll();
     }
     ZooCache zc = context.getZooCache();
@@ -185,6 +194,11 @@ public class TableZooHelper implements AutoCloseable {
   public NamespaceId getNamespaceId(TableId tableId) throws TableNotFoundException {
     checkArgument(context != null, "instance is null");
     checkArgument(tableId != null, "tableId is null");
+
+    if (AccumuloTable.allTableIds().contains(tableId)) {
+      return Namespace.ACCUMULO.id();
+    }
+
     ZooCache zc = context.getZooCache();
     byte[] n = zc.get(context.getZooKeeperRoot() + Constants.ZTABLES + "/" + tableId
         + Constants.ZTABLE_NAMESPACE);

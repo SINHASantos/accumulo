@@ -18,7 +18,7 @@
  */
 package org.apache.accumulo.test;
 
-import static com.google.common.util.concurrent.Uninterruptibles.sleepUninterruptibly;
+import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.apache.accumulo.harness.AccumuloITBase.MINI_CLUSTER_ONLY;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -39,7 +39,6 @@ import java.util.Map.Entry;
 import java.util.Set;
 import java.util.SortedSet;
 import java.util.TreeSet;
-import java.util.concurrent.TimeUnit;
 
 import org.apache.accumulo.cluster.ClusterUser;
 import org.apache.accumulo.core.client.Accumulo;
@@ -74,8 +73,7 @@ import org.apache.accumulo.core.iterators.Filter;
 import org.apache.accumulo.core.iterators.IteratorUtil.IteratorScope;
 import org.apache.accumulo.core.iterators.SortedKeyValueIterator;
 import org.apache.accumulo.core.iterators.user.VersioningIterator;
-import org.apache.accumulo.core.metadata.MetadataTable;
-import org.apache.accumulo.core.metadata.RootTable;
+import org.apache.accumulo.core.metadata.AccumuloTable;
 import org.apache.accumulo.core.security.Authorizations;
 import org.apache.accumulo.core.security.NamespacePermission;
 import org.apache.accumulo.core.security.SystemPermission;
@@ -136,7 +134,7 @@ public class NamespacesIT extends SharedMiniClusterBase {
         c.tableOperations().delete(t);
       }
     }
-    assertEquals(2, c.tableOperations().list().size());
+    assertEquals(4, c.tableOperations().list().size());
     for (String n : c.namespaceOperations().list()) {
       if (!n.equals(Namespace.ACCUMULO.name()) && !n.equals(Namespace.DEFAULT.name())) {
         c.namespaceOperations().delete(n);
@@ -403,7 +401,7 @@ public class NamespacesIT extends SharedMiniClusterBase {
       c.namespaceOperations().checkIteratorConflicts(namespace, setting,
           EnumSet.allOf(IteratorScope.class));
       c.namespaceOperations().attachIterator(namespace, setting);
-      sleepUninterruptibly(2, TimeUnit.SECONDS);
+      Thread.sleep(SECONDS.toMillis(2));
       var e = assertThrows(AccumuloException.class, () -> c.namespaceOperations()
           .checkIteratorConflicts(namespace, setting, EnumSet.allOf(IteratorScope.class)));
       assertEquals(IllegalArgumentException.class, e.getCause().getClass());
@@ -420,7 +418,7 @@ public class NamespacesIT extends SharedMiniClusterBase {
       // verify can see inserted entry again
       c.namespaceOperations().removeIterator(namespace, setting.getName(),
           EnumSet.allOf(IteratorScope.class));
-      sleepUninterruptibly(2, TimeUnit.SECONDS);
+      Thread.sleep(SECONDS.toMillis(2));
       assertFalse(c.namespaceOperations().listIterators(namespace).containsKey(iterName));
       assertFalse(c.tableOperations().listIterators(t1).containsKey(iterName));
     }
@@ -898,8 +896,8 @@ public class NamespacesIT extends SharedMiniClusterBase {
     // nobody should have any of these properties yet
     assertFalse(c.instanceOperations().getSystemConfiguration().containsValue(v));
     assertFalse(checkNamespaceHasProp(Namespace.ACCUMULO.name(), k, v));
-    assertFalse(checkTableHasProp(RootTable.NAME, k, v));
-    assertFalse(checkTableHasProp(MetadataTable.NAME, k, v));
+    assertFalse(checkTableHasProp(AccumuloTable.ROOT.tableName(), k, v));
+    assertFalse(checkTableHasProp(AccumuloTable.METADATA.tableName(), k, v));
     assertFalse(checkNamespaceHasProp(Namespace.DEFAULT.name(), k, v));
     assertFalse(checkTableHasProp(defaultNamespaceTable, k, v));
     assertFalse(checkNamespaceHasProp(namespace, k, v));
@@ -908,12 +906,14 @@ public class NamespacesIT extends SharedMiniClusterBase {
     // set the filter, verify that accumulo namespace is the only one unaffected
     c.instanceOperations().setProperty(k, v);
     // doesn't take effect immediately, needs time to propagate to tserver's ZooKeeper cache
-    sleepUninterruptibly(250, TimeUnit.MILLISECONDS);
+    Thread.sleep(250);
     assertTrue(c.instanceOperations().getSystemConfiguration().containsValue(v));
     assertEquals(systemNamespaceShouldInherit,
         checkNamespaceHasProp(Namespace.ACCUMULO.name(), k, v));
-    assertEquals(systemNamespaceShouldInherit, checkTableHasProp(RootTable.NAME, k, v));
-    assertEquals(systemNamespaceShouldInherit, checkTableHasProp(MetadataTable.NAME, k, v));
+    assertEquals(systemNamespaceShouldInherit,
+        checkTableHasProp(AccumuloTable.ROOT.tableName(), k, v));
+    assertEquals(systemNamespaceShouldInherit,
+        checkTableHasProp(AccumuloTable.METADATA.tableName(), k, v));
     assertTrue(checkNamespaceHasProp(Namespace.DEFAULT.name(), k, v));
     assertTrue(checkTableHasProp(defaultNamespaceTable, k, v));
     assertTrue(checkNamespaceHasProp(namespace, k, v));
@@ -922,11 +922,11 @@ public class NamespacesIT extends SharedMiniClusterBase {
     // verify it is no longer inherited
     c.instanceOperations().removeProperty(k);
     // doesn't take effect immediately, needs time to propagate to tserver's ZooKeeper cache
-    sleepUninterruptibly(250, TimeUnit.MILLISECONDS);
+    Thread.sleep(250);
     assertFalse(c.instanceOperations().getSystemConfiguration().containsValue(v));
     assertFalse(checkNamespaceHasProp(Namespace.ACCUMULO.name(), k, v));
-    assertFalse(checkTableHasProp(RootTable.NAME, k, v));
-    assertFalse(checkTableHasProp(MetadataTable.NAME, k, v));
+    assertFalse(checkTableHasProp(AccumuloTable.ROOT.tableName(), k, v));
+    assertFalse(checkTableHasProp(AccumuloTable.METADATA.tableName(), k, v));
     assertFalse(checkNamespaceHasProp(Namespace.DEFAULT.name(), k, v));
     assertFalse(checkTableHasProp(defaultNamespaceTable, k, v));
     assertFalse(checkNamespaceHasProp(namespace, k, v));

@@ -53,7 +53,7 @@ import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
  * jdwpEnabled=true
  * zooKeeperMemory=128M
  * tserverMemory=256M
- * masterMemory=128M
+ * managerMemory=128M
  * defaultMemory=256M
  * shutdownPort=4446
  * site.instance.secret=HUSH
@@ -71,8 +71,6 @@ public class MiniAccumuloRunner {
   private static final String ROOT_PASSWORD_PROP = "rootPassword";
   private static final String SHUTDOWN_PORT_PROP = "shutdownPort";
   private static final String DEFAULT_MEMORY_PROP = "defaultMemory";
-  @Deprecated(since = "2.1.0")
-  private static final String MASTER_MEMORY_PROP = "masterMemory";
   private static final String MANAGER_MEMORY_PROP = "managerMemory";
   private static final String TSERVER_MEMORY_PROP = "tserverMemory";
   private static final String ZOO_KEEPER_MEMORY_PROP = "zooKeeperMemory";
@@ -107,9 +105,9 @@ public class MiniAccumuloRunner {
     System.out.println();
     System.out.println("# Configuration normally placed in accumulo.properties can be added using"
         + " a site.* prefix.");
-    System.out.println("# For example the following line will set tserver.compaction.major.delay");
+    System.out.println("# For example the following line will set tserver.compaction.warn.time");
     System.out.println();
-    System.out.println("#site.tserver.compaction.major.delay=60s");
+    System.out.println("#site.tserver.compaction.warn.time=10m");
 
   }
 
@@ -182,9 +180,6 @@ public class MiniAccumuloRunner {
     if (opts.prop.containsKey(INSTANCE_NAME_PROP)) {
       config.setInstanceName(opts.prop.getProperty(INSTANCE_NAME_PROP));
     }
-    if (opts.prop.containsKey(NUM_T_SERVERS_PROP)) {
-      config.setNumTservers(Integer.parseInt(opts.prop.getProperty(NUM_T_SERVERS_PROP)));
-    }
     if (opts.prop.containsKey(ZOO_KEEPER_PORT_PROP)) {
       config.setZooKeeperPort(Integer.parseInt(opts.prop.getProperty(ZOO_KEEPER_PORT_PROP)));
     }
@@ -205,10 +200,6 @@ public class MiniAccumuloRunner {
     if (opts.prop.containsKey(TSERVER_MEMORY_PROP)) {
       setMemoryOnConfig(config, opts.prop.getProperty(TSERVER_MEMORY_PROP),
           ServerType.TABLET_SERVER);
-    }
-    if (opts.prop.containsKey(MASTER_MEMORY_PROP)) {
-      log.warn("{} is deprecated. Use {} instead.", MASTER_MEMORY_PROP, MANAGER_MEMORY_PROP);
-      setMemoryOnConfig(config, opts.prop.getProperty(MASTER_MEMORY_PROP), ServerType.MANAGER);
     }
     if (opts.prop.containsKey(MANAGER_MEMORY_PROP)) {
       setMemoryOnConfig(config, opts.prop.getProperty(MANAGER_MEMORY_PROP), ServerType.MANAGER);

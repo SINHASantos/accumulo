@@ -30,6 +30,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
@@ -46,11 +47,14 @@ import org.apache.accumulo.core.file.FileOperations;
 import org.apache.accumulo.core.file.FileSKVIterator;
 import org.apache.accumulo.core.iterators.SortedKeyValueIterator;
 import org.apache.accumulo.core.iteratorsImpl.system.MultiIterator;
+import org.apache.accumulo.core.metadata.UnreferencedTabletFile;
 import org.apache.accumulo.core.spi.crypto.CryptoEnvironment;
 import org.apache.accumulo.core.spi.crypto.CryptoService;
 import org.apache.accumulo.core.util.TextUtil;
 import org.apache.accumulo.start.spi.KeywordExecutable;
 import org.apache.datasketches.quantiles.ItemsSketch;
+import org.apache.datasketches.quantilescommon.QuantileSearchCriteria;
+import org.apache.datasketches.quantilescommon.QuantilesUtil;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -70,6 +74,10 @@ import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 public class GenerateSplits implements KeywordExecutable {
   private static final Logger log = LoggerFactory.getLogger(GenerateSplits.class);
 
+  private static final Set<Character> allowedChars = new HashSet<>();
+
+  private static final String encodeFlag = "-b64";
+
   static class Opts extends ConfigOpts {
     @Parameter(names = {"-n", "--num"},
         description = "The number of split points to generate. Can be used to create n+1 tablets. Cannot use with the split size option.")
@@ -79,7 +87,8 @@ public class GenerateSplits implements KeywordExecutable {
         description = "The minimum split size in uncompressed bytes. Cannot use with num splits option.")
     public long splitSize = 0;
 
-    @Parameter(names = {"-b64", "--base64encoded"}, description = "Base 64 encode the split points")
+    @Parameter(names = {encodeFlag, "--base64encoded"},
+        description = "Base 64 encode the split points")
     public boolean base64encode = false;
 
     @Parameter(names = {"-sf", "--splits-file"}, description = "Output the splits to a file")
@@ -87,6 +96,7 @@ public class GenerateSplits implements KeywordExecutable {
 
     @Parameter(description = "<file|directory>[ <file|directory>...] -n <num> | -ss <split_size>")
     public List<String> files = new ArrayList<>();
+
   }
 
   @Override
@@ -129,34 +139,47 @@ public class GenerateSplits implements KeywordExecutable {
     long splitSize = opts.splitSize;
 
     FileSystem fs = FileSystem.get(hadoopConf);
-    List<Path> filePaths = new ArrayList<>();
+    List<UnreferencedTabletFile> files = new ArrayList<>();
     for (String file : opts.files) {
       Path path = new Path(file);
       fs = PrintInfo.resolveFS(log, hadoopConf, path);
       // get all the files in the directory
-      filePaths.addAll(getFiles(fs, path));
+      files.addAll(getFiles(fs, path));
     }
 
-    if (filePaths.isEmpty()) {
+    if (files.isEmpty()) {
       throw new IllegalArgumentException("No files were found in " + opts.files);
     } else {
-      log.trace("Found the following files: {}", filePaths);
+      log.trace("Found the following files: {}", files);
+    }
+
+    if (!encode) {
+      // Generate the allowed Character set
+      for (int i = 0; i < 10; i++) {
+        // 0-9
+        allowedChars.add((char) (i + 48));
+      }
+      for (int i = 0; i < 26; i++) {
+        // Uppercase A-Z
+        allowedChars.add((char) (i + 65));
+        // Lowercase a-z
+        allowedChars.add((char) (i + 97));
+      }
     }
 
     // if no size specified look at indexed keys first
     if (opts.splitSize == 0) {
-      splits = getIndexKeys(siteConf, hadoopConf, fs, filePaths, requestedNumSplits, encode,
-          cryptoService);
+      splits =
+          getIndexKeys(siteConf, hadoopConf, fs, files, requestedNumSplits, encode, cryptoService);
       // if there weren't enough splits indexed, try again with size = 0
       if (splits.size() < requestedNumSplits) {
         log.info("Only found {} indexed keys but need {}. Doing a full scan on files {}",
-            splits.size(), requestedNumSplits, filePaths);
-        splits = getSplitsFromFullScan(siteConf, hadoopConf, filePaths, fs, requestedNumSplits,
-            encode, cryptoService);
+            splits.size(), requestedNumSplits, files);
+        splits = getSplitsFromFullScan(siteConf, hadoopConf, files, fs, requestedNumSplits, encode,
+            cryptoService);
       }
     } else {
-      splits =
-          getSplitsBySize(siteConf, hadoopConf, filePaths, fs, splitSize, encode, cryptoService);
+      splits = getSplitsBySize(siteConf, hadoopConf, files, fs, splitSize, encode, cryptoService);
     }
 
     TreeSet<String> desiredSplits;
@@ -182,32 +205,39 @@ public class GenerateSplits implements KeywordExecutable {
     }
   }
 
-  private List<Path> getFiles(FileSystem fs, Path path) throws IOException {
-    List<Path> filePaths = new ArrayList<>();
+  private List<UnreferencedTabletFile> getFiles(FileSystem fs, Path path) throws IOException {
+    List<UnreferencedTabletFile> files = new ArrayList<>();
     if (fs.getFileStatus(path).isDirectory()) {
       var iter = fs.listFiles(path, true);
       while (iter.hasNext()) {
-        filePaths.addAll(getFiles(fs, iter.next().getPath()));
+        files.addAll(getFiles(fs, iter.next().getPath()));
       }
     } else {
       if (!path.toString().endsWith(".rf")) {
         throw new IllegalArgumentException("Provided file (" + path + ") does not end with '.rf'");
       }
-      filePaths.add(path);
+      files.add(UnreferencedTabletFile.of(fs, path));
     }
-    return filePaths;
+    return files;
   }
 
   private Text[] getQuantiles(SortedKeyValueIterator<Key,Value> iterator, int numSplits)
       throws IOException {
-    ItemsSketch<Text> itemsSketch = ItemsSketch.getInstance(BinaryComparable::compareTo);
+    var itemsSketch = ItemsSketch.getInstance(Text.class, BinaryComparable::compareTo);
     while (iterator.hasTop()) {
       Text row = iterator.getTopKey().getRow();
       itemsSketch.update(row);
       iterator.next();
     }
-    Text[] items = itemsSketch.getQuantiles(numSplits + 2);
-    // based on the ItemsSketch javadoc, method returns min, max as well so drop first and last
+    // the number requested represents the number of regions between the resulting array elements
+    // the actual number of array elements is one more than that to account for endpoints;
+    // so, we ask for one more because we want the number of median elements in the array to
+    // represent the number of split points and we will drop the first and last array element
+    double[] ranks = QuantilesUtil.equallyWeightedRanks(numSplits + 1);
+    // the choice to use INCLUSIVE or EXCLUSIVE is arbitrary here; EXCLUSIVE matches the behavior
+    // of datasketches 3.x, so we might as well preserve that for 4.x
+    Text[] items = itemsSketch.getQuantiles(ranks, QuantileSearchCriteria.EXCLUSIVE);
+    // drop the min and max, so we only keep the median elements to use as split points
     return Arrays.copyOfRange(items, 1, items.length - 1);
   }
 
@@ -247,16 +277,15 @@ public class GenerateSplits implements KeywordExecutable {
     if (encode) {
       return Base64.getEncoder().encodeToString(bytes);
     } else {
-      // drop non printable characters
       StringBuilder sb = new StringBuilder();
       for (byte aByte : bytes) {
         int c = 0xff & aByte;
-        if (c == '\\') {
-          sb.append("\\\\");
-        } else if (c >= 32 && c <= 126) {
+        if (allowedChars.contains((char) c)) {
           sb.append((char) c);
         } else {
-          log.debug("Dropping non printable char: \\x{}", Integer.toHexString(c));
+          // Fail if non-printable characters are detected.
+          throw new UnsupportedOperationException("Non printable char: \\x" + Integer.toHexString(c)
+              + " detected. Must use Base64 encoded output.  The behavior around non printable chars changed in 2.1.3 to throw an error, the previous behavior was likely to cause bugs.");
         }
       }
       return sb.toString();
@@ -267,16 +296,15 @@ public class GenerateSplits implements KeywordExecutable {
    * Scan the files for indexed keys first since it is more efficient than a full file scan.
    */
   private TreeSet<String> getIndexKeys(AccumuloConfiguration accumuloConf, Configuration hadoopConf,
-      FileSystem fs, List<Path> files, int requestedNumSplits, boolean base64encode,
-      CryptoService cs) throws IOException {
+      FileSystem fs, List<UnreferencedTabletFile> files, int requestedNumSplits,
+      boolean base64encode, CryptoService cs) throws IOException {
     Text[] splitArray;
     List<SortedKeyValueIterator<Key,Value>> readers = new ArrayList<>(files.size());
     List<FileSKVIterator> fileReaders = new ArrayList<>(files.size());
     try {
-      for (Path file : files) {
+      for (UnreferencedTabletFile file : files) {
         FileSKVIterator reader = FileOperations.getInstance().newIndexReaderBuilder()
-            .forFile(file.toString(), fs, hadoopConf, cs).withTableConfiguration(accumuloConf)
-            .build();
+            .forFile(file, fs, hadoopConf, cs).withTableConfiguration(accumuloConf).build();
         readers.add(reader);
         fileReaders.add(reader);
       }
@@ -294,7 +322,7 @@ public class GenerateSplits implements KeywordExecutable {
   }
 
   private TreeSet<String> getSplitsFromFullScan(SiteConfiguration accumuloConf,
-      Configuration hadoopConf, List<Path> files, FileSystem fs, int numSplits,
+      Configuration hadoopConf, List<UnreferencedTabletFile> files, FileSystem fs, int numSplits,
       boolean base64encode, CryptoService cs) throws IOException {
     Text[] splitArray;
     List<FileSKVIterator> fileReaders = new ArrayList<>(files.size());
@@ -302,9 +330,9 @@ public class GenerateSplits implements KeywordExecutable {
     SortedKeyValueIterator<Key,Value> iterator;
 
     try {
-      for (Path file : files) {
+      for (UnreferencedTabletFile file : files) {
         FileSKVIterator reader = FileOperations.getInstance().newScanReaderBuilder()
-            .forFile(file.toString(), fs, hadoopConf, cs).withTableConfiguration(accumuloConf)
+            .forFile(file, fs, hadoopConf, cs).withTableConfiguration(accumuloConf)
             .overRange(new Range(), Set.of(), false).build();
         readers.add(reader);
         fileReaders.add(reader);
@@ -327,7 +355,7 @@ public class GenerateSplits implements KeywordExecutable {
    * Get number of splits based on requested size of split.
    */
   private TreeSet<String> getSplitsBySize(AccumuloConfiguration accumuloConf,
-      Configuration hadoopConf, List<Path> files, FileSystem fs, long splitSize,
+      Configuration hadoopConf, List<UnreferencedTabletFile> files, FileSystem fs, long splitSize,
       boolean base64encode, CryptoService cs) throws IOException {
     long currentSplitSize = 0;
     long totalSize = 0;
@@ -336,9 +364,9 @@ public class GenerateSplits implements KeywordExecutable {
     List<SortedKeyValueIterator<Key,Value>> readers = new ArrayList<>(files.size());
     SortedKeyValueIterator<Key,Value> iterator;
     try {
-      for (Path file : files) {
+      for (UnreferencedTabletFile file : files) {
         FileSKVIterator reader = FileOperations.getInstance().newScanReaderBuilder()
-            .forFile(file.toString(), fs, hadoopConf, cs).withTableConfiguration(accumuloConf)
+            .forFile(file, fs, hadoopConf, cs).withTableConfiguration(accumuloConf)
             .overRange(new Range(), Set.of(), false).build();
         readers.add(reader);
         fileReaders.add(reader);

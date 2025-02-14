@@ -43,16 +43,14 @@ import org.apache.accumulo.core.data.Key;
 import org.apache.accumulo.core.data.TableId;
 import org.apache.accumulo.core.data.Value;
 import org.apache.accumulo.core.dataImpl.KeyExtent;
-import org.apache.accumulo.core.metadata.MetadataTable;
-import org.apache.accumulo.core.metadata.RootTable;
-import org.apache.accumulo.core.metadata.TabletFile;
+import org.apache.accumulo.core.metadata.AccumuloTable;
+import org.apache.accumulo.core.metadata.StoredTabletFile;
 import org.apache.accumulo.core.metadata.schema.DataFileValue;
 import org.apache.accumulo.core.metadata.schema.MetadataSchema;
 import org.apache.accumulo.core.security.Authorizations;
 import org.apache.accumulo.core.trace.TraceUtil;
 import org.apache.accumulo.core.util.NumUtil;
 import org.apache.accumulo.server.cli.ServerUtilOpts;
-import org.apache.hadoop.fs.Path;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -81,10 +79,10 @@ public class TableDiskUsage {
 
   private static final Logger log = LoggerFactory.getLogger(TableDiskUsage.class);
   private int nextInternalId = 0;
-  private Map<TableId,Integer> internalIds = new HashMap<>();
-  private Map<Integer,TableId> externalIds = new HashMap<>();
-  private Map<String,Integer[]> tableFiles = new HashMap<>();
-  private Map<String,Long> fileSizes = new HashMap<>();
+  private final Map<TableId,Integer> internalIds = new HashMap<>();
+  private final Map<Integer,TableId> externalIds = new HashMap<>();
+  private final Map<String,Integer[]> tableFiles = new HashMap<>();
+  private final Map<String,Long> fileSizes = new HashMap<>();
 
   void addTable(TableId tableId) {
     if (internalIds.containsKey(tableId)) {
@@ -205,18 +203,18 @@ public class TableDiskUsage {
     for (TableId tableId : tableIds) {
       // if the table to compute usage is for the metadata table itself then we need to scan the
       // root table, else we scan the metadata table
-      try (Scanner mdScanner = tableId.equals(MetadataTable.ID)
-          ? client.createScanner(RootTable.NAME, Authorizations.EMPTY)
-          : client.createScanner(MetadataTable.NAME, Authorizations.EMPTY)) {
+      try (Scanner mdScanner = tableId.equals(AccumuloTable.METADATA.tableId())
+          ? client.createScanner(AccumuloTable.ROOT.tableName(), Authorizations.EMPTY)
+          : client.createScanner(AccumuloTable.METADATA.tableName(), Authorizations.EMPTY)) {
         mdScanner.fetchColumnFamily(MetadataSchema.TabletsSection.DataFileColumnFamily.NAME);
         mdScanner.setRange(new KeyExtent(tableId, null, null).toMetaRange());
 
-        final Set<TabletFile> files = new HashSet<>();
+        final Set<StoredTabletFile> files = new HashSet<>();
 
         // Read each file referenced by that table
         for (Map.Entry<Key,Value> entry : mdScanner) {
-          final TabletFile file =
-              new TabletFile(new Path(entry.getKey().getColumnQualifier().toString()));
+          final StoredTabletFile file =
+              new StoredTabletFile(entry.getKey().getColumnQualifier().toString());
 
           // get the table referenced by the file which may not be the same as the current
           // table we are scanning if the file is shared between multiple tables
@@ -331,7 +329,7 @@ public class TableDiskUsage {
 
   static class Opts extends ServerUtilOpts {
     @Parameter(description = " <table> { <table> ... } ")
-    List<String> tables = new ArrayList<>();
+    final List<String> tables = new ArrayList<>();
   }
 
   public static void main(String[] args) throws Exception {

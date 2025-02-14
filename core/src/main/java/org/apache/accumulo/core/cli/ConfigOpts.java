@@ -47,26 +47,6 @@ public class ConfigOpts extends Help {
     return propsPath;
   }
 
-  // catch all for string based dropped options, including those specific to subclassed extensions
-  // uncomment below if needed
-  // @Parameter(names = {}, hidden=true)
-  private String legacyOpts = null;
-
-  // catch all for boolean dropped options, including those specific to subclassed extensions
-  @Parameter(names = {"-s", "--safemode"}, hidden = true)
-  private boolean legacyOptsBoolean = false;
-
-  // holds information on dealing with dropped options
-  // option -> Message describing replacement option or property
-  private static Map<String,String> LEGACY_OPTION_MSG = new HashMap<>();
-  static {
-    // garbage collector legacy options
-    LEGACY_OPTION_MSG.put("-s", "Replaced by configuration property " + Property.GC_SAFEMODE);
-    LEGACY_OPTION_MSG.put("--safemode",
-        "Replaced by configuration property " + Property.GC_SAFEMODE);
-
-  }
-
   public static class NullSplitter implements IParameterSplitter {
     @Override
     public List<String> split(String value) {
@@ -76,7 +56,10 @@ public class ConfigOpts extends Help {
 
   @Parameter(names = "-o", splitter = NullSplitter.class,
       description = "Overrides configuration set in accumulo.properties (but NOT system-wide config"
-          + " set in Zookeeper). Expected format: -o <key>=<value>")
+          + " set in Zookeeper). This is useful when you have process specific configuration items"
+          + " that are one-offs from a shared common configuration. Setting the bind address,"
+          + " for example, can be done with the arguments \"-o general.process.bind.addr=127.0.0.1\"."
+          + " Expected format: -o <key>=<value> [-o <key>=<value>]")
   private List<String> overrides = new ArrayList<>();
 
   private SiteConfiguration siteConfig = null;
@@ -118,20 +101,6 @@ public class ConfigOpts extends Help {
   @Override
   public void parseArgs(String programName, String[] args, Object... others) {
     super.parseArgs(programName, args, others);
-    if (legacyOpts != null || legacyOptsBoolean) {
-      String errMsg = "";
-      for (String option : args) {
-        if (LEGACY_OPTION_MSG.containsKey(option)) {
-          errMsg +=
-              "Option " + option + " has been dropped - " + LEGACY_OPTION_MSG.get(option) + "\n";
-        }
-      }
-      errMsg += "See '-o' property override option";
-      // prints error to console if ran from the command line otherwise there is no way to know that
-      // an error occurred
-      System.err.println(errMsg);
-      throw new IllegalArgumentException(errMsg);
-    }
     if (!getOverrides().isEmpty()) {
       log.info("The following configuration was set on the command line:");
       for (Map.Entry<String,String> entry : getOverrides().entrySet()) {

@@ -20,6 +20,7 @@ package org.apache.accumulo.core.conf;
 
 import static java.util.Objects.requireNonNull;
 
+import java.io.IOException;
 import java.util.Arrays;
 import java.util.Objects;
 import java.util.function.Function;
@@ -29,9 +30,14 @@ import java.util.regex.Pattern;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
+import org.apache.accumulo.core.file.rfile.RFile;
 import org.apache.commons.lang3.Range;
 import org.apache.hadoop.fs.Path;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Preconditions;
 
 /**
@@ -125,26 +131,31 @@ public enum PropertyType {
   GC_POST_ACTION("gc_post_action", in(true, null, "none", "flush", "compact"),
       "One of 'none', 'flush', or 'compact'."),
 
-  LAST_LOCATION_MODE("last_location_mode", in(true, null, "assignment", "compaction"),
-      "Defines how to update the last location.  One of 'assignment', or 'compaction'."),
-
   STRING("string", x -> true,
       "An arbitrary string of characters whose format is unspecified and"
           + " interpreted based on the context of the property to which it applies."),
 
+  JSON("json", new ValidJson(),
+      "An arbitrary string that is represents a valid, parsable generic json object."
+          + "The validity of the json object in the context of the property usage is not checked by this type."),
   BOOLEAN("boolean", in(false, null, "true", "false"),
       "Has a value of either 'true' or 'false' (case-insensitive)"),
 
-  URI("uri", x -> true, "A valid URI");
+  URI("uri", x -> true, "A valid URI"),
 
-  private String shortname, format;
+  FILENAME_EXT("file name extension", in(true, RFile.EXTENSION),
+      "One of the currently supported filename extensions for storing table data files. "
+          + "Currently, only " + RFile.EXTENSION + " is supported.");
+
+  private final String shortname;
+  private final String format;
   // Field is transient because enums are Serializable, but Predicates aren't necessarily,
   // and our lambdas certainly aren't; This shouldn't matter because enum serialization doesn't
   // store fields, so this is a false positive in our spotbugs version
   // see https://github.com/spotbugs/spotbugs/issues/740
-  private transient Predicate<String> predicate;
+  private transient final Predicate<String> predicate;
 
-  private PropertyType(String shortname, Predicate<String> predicate, String formatDescription) {
+  PropertyType(String shortname, Predicate<String> predicate, String formatDescription) {
     this.shortname = shortname;
     this.predicate = Objects.requireNonNull(predicate);
     this.format = formatDescription;
@@ -178,6 +189,41 @@ public enum PropertyType {
     return predicate.test(value);
   }
 
+  /**
+   * Validate that the provided string can be parsed into a json object. This implementation uses
+   * jackson databind because it is less permissive that GSON for what is considered valid. This
+   * implementation cannot guarantee that the json is valid for the target usage. That would require
+   * something like a json schema or a check specific to the use-case. This is only trying to
+   * provide a generic, minimal check that at least the json is valid.
+   */
+  private static class ValidJson implements Predicate<String> {
+    private static final Logger log = LoggerFactory.getLogger(ValidJson.class);
+
+    // ObjectMapper is thread-safe, but uses synchronization. If this causes contention, ThreadLocal
+    // may be an option.
+    private final ObjectMapper jsonMapper =
+        new ObjectMapper().enable(DeserializationFeature.FAIL_ON_READING_DUP_TREE_KEY)
+            .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
+
+    // set a limit of 1 million characters on the string as rough guard on invalid input
+    private static final int ONE_MILLION = 1024 * 1024;
+
+    @Override
+    public boolean test(String value) {
+      try {
+        if (value.length() > ONE_MILLION) {
+          log.info("provided json string length {} is greater than limit of {} for parsing",
+              value.length(), ONE_MILLION);
+          return false;
+        }
+        jsonMapper.readTree(value);
+        return true;
+      } catch (IOException ex) {
+        return false;
+      }
+    }
+  }
+
   private static Predicate<String> in(final boolean caseSensitive, final String... allowedSet) {
     if (caseSensitive) {
       return x -> Arrays.stream(allowedSet)
@@ -196,7 +242,7 @@ public enum PropertyType {
         || (suffixCheck.test(x) && new Bounds(lowerBound, upperBound).test(stripUnits.apply(x)));
   }
 
-  private static final Pattern SUFFIX_REGEX = Pattern.compile("[^\\d]*$");
+  private static final Pattern SUFFIX_REGEX = Pattern.compile("\\D*$"); // match non-digits at end
   private static final Function<String,String> stripUnits =
       x -> x == null ? null : SUFFIX_REGEX.matcher(x.trim()).replaceAll("");
 
@@ -310,7 +356,7 @@ public enum PropertyType {
 
   public static class PortRange extends Matches {
 
-    public static final Range<Integer> VALID_RANGE = Range.between(1024, 65535);
+    public static final Range<Integer> VALID_RANGE = Range.of(1024, 65535);
 
     public PortRange(final String pattern) {
       super(pattern);

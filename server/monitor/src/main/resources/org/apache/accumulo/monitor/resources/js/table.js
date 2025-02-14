@@ -80,7 +80,23 @@ function initTableServerTable(tableID) {
           }
           return data;
         }
-      }
+      },
+      // ensure these 3 columns are sorted by the 2 numeric values that comprise the combined string
+      // instead of sorting them lexicographically by the string itself.
+      // Specifically: 'targets' column will use the values in the 'orderData' columns
+
+      // scan column will be sorted by number of running, then by number of queued
+      {
+        "targets": [7],
+        "type": "numeric",
+        "orderData": [13, 14]
+      },
+      // minor compaction column will be sorted by number of running, then by number of queued
+      {
+        "targets": [8],
+        "type": "numeric",
+        "orderData": [15, 16]
+      },
     ],
     "columns": [{
         "data": "hostname",
@@ -121,11 +137,6 @@ function initTableServerTable(tableID) {
         }
       },
       {
-        "data": function (row) {
-          return getQueuedAndRunning(row.compactions.major);
-        }
-      },
-      {
         "data": "indexCacheHitRate"
       },
       {
@@ -133,6 +144,22 @@ function initTableServerTable(tableID) {
       },
       {
         "data": "osload"
+      },
+      {
+        "data": "scansRunning",
+        "visible": false
+      },
+      {
+        "data": "scansQueued",
+        "visible": false
+      },
+      {
+        "data": "minorRunning",
+        "visible": false
+      },
+      {
+        "data": "minorQueued",
+        "visible": false
       }
     ]
   });

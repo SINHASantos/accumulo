@@ -18,6 +18,8 @@
  */
 package org.apache.accumulo.test.functional;
 
+import static org.apache.accumulo.core.util.LazySingletons.RANDOM;
+
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -42,7 +44,6 @@ import org.apache.accumulo.core.file.keyfunctor.ColumnFamilyFunctor;
 import org.apache.accumulo.core.file.keyfunctor.ColumnQualifierFunctor;
 import org.apache.accumulo.core.file.keyfunctor.RowFunctor;
 import org.apache.accumulo.core.security.Authorizations;
-import org.apache.accumulo.core.util.UtilWaitThread;
 import org.apache.accumulo.harness.AccumuloClusterHarness;
 import org.apache.accumulo.minicluster.MemoryUnit;
 import org.apache.accumulo.miniclusterImpl.MiniAccumuloConfigImpl;
@@ -63,7 +64,7 @@ public class BloomFilterIT extends AccumuloClusterHarness {
   @Override
   public void configureMiniCluster(MiniAccumuloConfigImpl cfg, Configuration hadoopCoreSite) {
     cfg.setDefaultMemory(1, MemoryUnit.GIGABYTE);
-    cfg.setNumTservers(1);
+    cfg.getClusterServerConfiguration().setNumDefaultTabletServers(1);
     Map<String,String> siteConfig = cfg.getSiteConfig();
     siteConfig.put(Property.TSERV_TOTAL_MUTATION_QUEUE_MAX.getKey(), "10M");
     cfg.setSiteConfig(siteConfig);
@@ -136,8 +137,8 @@ public class BloomFilterIT extends AccumuloClusterHarness {
         c.tableOperations().setProperty(tables[3], Property.TABLE_BLOOM_KEY_FUNCTOR.getKey(),
             RowFunctor.class.getName());
 
-        // ensure the updates to zookeeper propagate
-        UtilWaitThread.sleep(500);
+        // allow the updates to zookeeper propagate
+        Thread.sleep(500);
 
         c.tableOperations().compact(tables[3], null, null, false, true);
         c.tableOperations().compact(tables[0], null, null, false, true);
@@ -187,7 +188,7 @@ public class BloomFilterIT extends AccumuloClusterHarness {
     Text row = new Text("row"), cq = new Text("cq"), cf = new Text("cf");
 
     for (int i = 0; i < num; ++i) {
-      Long k = ((random.nextLong() & 0x7fffffffffffffffL) % (end - start)) + start;
+      Long k = ((RANDOM.get().nextLong() & 0x7fffffffffffffffL) % (end - start)) + start;
       key.set(String.format("k_%010d", k));
       Range range = null;
       Key acuKey;

@@ -82,7 +82,7 @@ public class AuthenticationTokenSecretManager extends SecretManager<Authenticati
       DelegationTokenConfig cfg) {
     long now = System.currentTimeMillis();
     identifier.setIssueDate(now);
-    identifier.setExpirationDate(calculateExpirationDate());
+    identifier.setExpirationDate(calculateExpirationDate(now));
     // Limit the lifetime if the user requests it
     if (cfg != null) {
       long requestedLifetime = cfg.getTokenLifetime(TimeUnit.MILLISECONDS);
@@ -94,7 +94,7 @@ public class AuthenticationTokenSecretManager extends SecretManager<Authenticati
         }
         // Ensure that the user doesn't try to extend the expiration date -- they may only limit it
         if (requestedExpirationDate > identifier.getExpirationDate()) {
-          throw new RuntimeException("Requested token lifetime exceeds configured maximum");
+          throw new IllegalStateException("Requested token lifetime exceeds configured maximum");
         }
         log.trace("Overriding token expiration date from {} to {}", identifier.getExpirationDate(),
             requestedExpirationDate);
@@ -104,8 +104,7 @@ public class AuthenticationTokenSecretManager extends SecretManager<Authenticati
     return createPassword(identifier);
   }
 
-  private long calculateExpirationDate() {
-    long now = System.currentTimeMillis();
+  private long calculateExpirationDate(long now) {
     long expiration = now + tokenMaxLifetime;
     // Catch overflow
     if (expiration < now) {
@@ -123,11 +122,12 @@ public class AuthenticationTokenSecretManager extends SecretManager<Authenticati
     identifier.setKeyId(secretKey.getKeyId());
     identifier.setInstanceId(instanceID);
 
+    long now = System.currentTimeMillis();
     if (!identifier.isSetIssueDate()) {
-      identifier.setIssueDate(System.currentTimeMillis());
+      identifier.setIssueDate(now);
     }
     if (!identifier.isSetExpirationDate()) {
-      identifier.setExpirationDate(calculateExpirationDate());
+      identifier.setExpirationDate(calculateExpirationDate(now));
     }
     return createPassword(identifier.getBytes(), secretKey.getKey());
   }
@@ -256,7 +256,7 @@ public class AuthenticationTokenSecretManager extends SecretManager<Authenticati
           keyDistributor.remove(key);
         } catch (KeeperException | InterruptedException e) {
           log.error("Failed to remove AuthenticationKey from ZooKeeper. Exiting", e);
-          throw new RuntimeException(e);
+          throw new IllegalStateException(e);
         }
       }
     }

@@ -18,18 +18,17 @@
  */
 package org.apache.accumulo.test.functional;
 
-import static com.google.common.util.concurrent.Uninterruptibles.sleepUninterruptibly;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 
 import java.io.IOException;
 import java.time.Duration;
-import java.util.List;
-import java.util.concurrent.TimeUnit;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.accumulo.core.client.Accumulo;
 import org.apache.accumulo.core.client.AccumuloClient;
+import org.apache.accumulo.core.client.admin.servers.ServerId;
 import org.apache.accumulo.miniclusterImpl.MiniAccumuloClusterImpl;
 import org.apache.accumulo.server.util.Admin;
 import org.apache.accumulo.test.TestIngest;
@@ -48,7 +47,7 @@ public class ShutdownIT extends ConfigurableMacBase {
   public void shutdownDuringIngest() throws Exception {
     Process ingest = cluster
         .exec(TestIngest.class, "-c", cluster.getClientPropsPath(), "--createTable").getProcess();
-    sleepUninterruptibly(100, TimeUnit.MILLISECONDS);
+    Thread.sleep(100);
     assertEquals(0, cluster.exec(Admin.class, "stopAll").getProcess().waitFor());
     ingest.destroy();
   }
@@ -60,7 +59,7 @@ public class ShutdownIT extends ConfigurableMacBase {
             .getProcess().waitFor());
     Process verify =
         cluster.exec(VerifyIngest.class, "-c", cluster.getClientPropsPath()).getProcess();
-    sleepUninterruptibly(100, TimeUnit.MILLISECONDS);
+    Thread.sleep(100);
     assertEquals(0, cluster.exec(Admin.class, "stopAll").getProcess().waitFor());
     verify.destroy();
   }
@@ -72,7 +71,7 @@ public class ShutdownIT extends ConfigurableMacBase {
             .getProcess().waitFor());
     Process deleter =
         cluster.exec(TestRandomDeletes.class, "-c", cluster.getClientPropsPath()).getProcess();
-    sleepUninterruptibly(100, TimeUnit.MILLISECONDS);
+    Thread.sleep(100);
     assertEquals(0, cluster.exec(Admin.class, "stopAll").getProcess().waitFor());
     deleter.destroy();
   }
@@ -94,7 +93,7 @@ public class ShutdownIT extends ConfigurableMacBase {
         }
       });
       async.start();
-      sleepUninterruptibly(100, TimeUnit.MILLISECONDS);
+      Thread.sleep(100);
       assertEquals(0, cluster.exec(Admin.class, "stopAll").getProcess().waitFor());
       if (ref.get() != null) {
         throw ref.get();
@@ -119,13 +118,14 @@ public class ShutdownIT extends ConfigurableMacBase {
     int x = cluster.exec(TestIngest.class, "-c", cluster.getClientPropsPath(), "--createTable")
         .getProcess().waitFor();
     assertEquals(0, x);
-    List<String> tabletServers = c.instanceOperations().getTabletServers();
+    Set<ServerId> tabletServers = c.instanceOperations().getServers(ServerId.Type.TABLET_SERVER);
     assertEquals(2, tabletServers.size());
-    String doomed = tabletServers.get(0);
+    ServerId doomed = tabletServers.iterator().next();
     log.info("Stopping " + doomed);
-    assertEquals(0, cluster.exec(Admin.class, "stop", doomed).getProcess().waitFor());
-    tabletServers = c.instanceOperations().getTabletServers();
+    assertEquals(0,
+        cluster.exec(Admin.class, "stop", doomed.toHostPortString()).getProcess().waitFor());
+    tabletServers = c.instanceOperations().getServers(ServerId.Type.TABLET_SERVER);
     assertEquals(1, tabletServers.size());
-    assertNotEquals(tabletServers.get(0), doomed);
+    assertNotEquals(tabletServers.iterator().next(), doomed);
   }
 }

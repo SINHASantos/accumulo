@@ -18,9 +18,7 @@
  */
 package org.apache.accumulo.server;
 
-import java.io.IOException;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 import org.apache.accumulo.core.classloader.ClassLoaderUtil;
 import org.apache.accumulo.core.client.TableNotFoundException;
@@ -28,15 +26,23 @@ import org.apache.accumulo.core.conf.ConfigurationTypeHelper;
 import org.apache.accumulo.core.data.TableId;
 import org.apache.accumulo.core.spi.common.ServiceEnvironment;
 import org.apache.accumulo.core.util.ConfigurationImpl;
+import org.apache.accumulo.core.util.cache.Caches.CacheName;
+
+import com.github.benmanes.caffeine.cache.Cache;
 
 public class ServiceEnvironmentImpl implements ServiceEnvironment {
 
   private final ServerContext context;
   private final Configuration conf;
-  private final Map<TableId,Configuration> tableConfigs = new ConcurrentHashMap<>();
+  private final Cache<TableId,Configuration> tableConfigs;
 
   public ServiceEnvironmentImpl(ServerContext context) {
     this.context = context;
+    // For a long-lived instance of this object, avoid keeping references around to tables that may
+    // have been deleted.
+    this.tableConfigs =
+        context.getCaches().createNewBuilder(CacheName.SERVICE_ENVIRONMENT_TABLE_CONFIGS, true)
+            .expireAfterAccess(10, TimeUnit.MINUTES).build();
     this.conf = new ConfigurationImpl(this.context.getConfiguration());
   }
 
@@ -47,7 +53,7 @@ public class ServiceEnvironmentImpl implements ServiceEnvironment {
 
   @Override
   public Configuration getConfiguration(TableId tableId) {
-    return tableConfigs.computeIfAbsent(tableId,
+    return tableConfigs.get(tableId,
         tid -> new ConfigurationImpl(context.getTableConfiguration(tid)));
   }
 
@@ -57,14 +63,13 @@ public class ServiceEnvironmentImpl implements ServiceEnvironment {
   }
 
   @Override
-  public <T> T instantiate(String className, Class<T> base)
-      throws ReflectiveOperationException, IOException {
+  public <T> T instantiate(String className, Class<T> base) throws ReflectiveOperationException {
     return ConfigurationTypeHelper.getClassInstance(null, className, base);
   }
 
   @Override
   public <T> T instantiate(TableId tableId, String className, Class<T> base)
-      throws ReflectiveOperationException, IOException {
+      throws ReflectiveOperationException {
     String ctx = ClassLoaderUtil.tableContext(context.getTableConfiguration(tableId));
     return ConfigurationTypeHelper.getClassInstance(ctx, className, base);
   }

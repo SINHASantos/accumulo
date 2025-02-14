@@ -18,7 +18,7 @@
  */
 package org.apache.accumulo.test;
 
-import static org.apache.accumulo.harness.AccumuloITBase.random;
+import static org.apache.accumulo.core.util.LazySingletons.RANDOM;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -30,7 +30,7 @@ import org.apache.accumulo.core.client.AccumuloException;
 import org.apache.accumulo.core.client.AccumuloSecurityException;
 import org.apache.accumulo.core.data.TableId;
 import org.apache.accumulo.core.data.TabletId;
-import org.apache.accumulo.core.metadata.MetadataTable;
+import org.apache.accumulo.core.metadata.AccumuloTable;
 import org.apache.accumulo.core.spi.balancer.BalancerEnvironment;
 import org.apache.accumulo.core.spi.balancer.TabletBalancer;
 import org.apache.accumulo.core.spi.balancer.data.TServerStatus;
@@ -85,7 +85,7 @@ public class ChaoticLoadBalancer implements TabletBalancer {
     }
 
     for (TabletId tabletId : params.unassignedTablets().keySet()) {
-      int index = random.nextInt(tServerArray.size());
+      int index = RANDOM.get().nextInt(tServerArray.size());
       TabletServerId dest = tServerArray.get(index);
       params.addAssignment(tabletId, dest);
       long remaining = toAssign.get(dest) - 1;
@@ -115,7 +115,7 @@ public class ChaoticLoadBalancer implements TabletBalancer {
     }
     problemReporter.clearProblemReportTimes();
 
-    boolean moveMetadata = random.nextInt(4) == 0;
+    boolean moveMetadata = RANDOM.get().nextInt(4) == 0;
     long totalTablets = 0;
     for (Entry<TabletServerId,TServerStatus> e : params.currentStatus().entrySet()) {
       long tabletCount = 0;
@@ -133,12 +133,12 @@ public class ChaoticLoadBalancer implements TabletBalancer {
     for (Entry<TabletServerId,TServerStatus> e : params.currentStatus().entrySet()) {
       for (String tableId : e.getValue().getTableMap().keySet()) {
         TableId id = TableId.of(tableId);
-        if (!moveMetadata && MetadataTable.ID.equals(id)) {
+        if (!moveMetadata && AccumuloTable.METADATA.tableId().equals(id)) {
           continue;
         }
         try {
           for (TabletStatistics ts : getOnlineTabletsForTable(e.getKey(), id)) {
-            int index = random.nextInt(underCapacityTServer.size());
+            int index = RANDOM.get().nextInt(underCapacityTServer.size());
             TabletServerId dest = underCapacityTServer.get(index);
             if (dest.equals(e.getKey())) {
               continue;

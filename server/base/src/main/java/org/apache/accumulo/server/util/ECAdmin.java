@@ -18,8 +18,15 @@
  */
 package org.apache.accumulo.server.util;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
+
+import org.apache.accumulo.core.client.admin.servers.ServerId;
 import org.apache.accumulo.core.compaction.thrift.CompactionCoordinatorService;
-import org.apache.accumulo.core.compaction.thrift.TExternalCompactionList;
+import org.apache.accumulo.core.compaction.thrift.TExternalCompactionMap;
 import org.apache.accumulo.core.dataImpl.KeyExtent;
 import org.apache.accumulo.core.metadata.schema.ExternalCompactionId;
 import org.apache.accumulo.core.rpc.ThriftUtil;
@@ -138,24 +145,28 @@ public class ECAdmin implements KeywordExecutable {
       coordinatorClient.cancel(TraceUtil.traceInfo(), context.rpcCreds(), ecid);
       System.out.println("Cancel sent to coordinator for " + ecid);
     } catch (Exception e) {
-      throw new RuntimeException("Exception calling cancel compaction for " + ecid, e);
+      throw new IllegalStateException("Exception calling cancel compaction for " + ecid, e);
     } finally {
       ThriftUtil.returnClient(coordinatorClient, context);
     }
   }
 
   private void listCompactorsByQueue(ServerContext context) {
-    var queueToCompactorsMap = ExternalCompactionUtil.getCompactorAddrs(context);
-    if (queueToCompactorsMap.isEmpty()) {
+    Set<ServerId> compactors = context.instanceOperations().getServers(ServerId.Type.COMPACTOR);
+    if (compactors.isEmpty()) {
       System.out.println("No Compactors found.");
     } else {
-      queueToCompactorsMap.forEach((q, compactors) -> System.out.println(q + ": " + compactors));
+      Map<String,List<ServerId>> m = new TreeMap<>();
+      compactors.forEach(csi -> {
+        m.putIfAbsent(csi.getResourceGroup(), new ArrayList<>()).add(csi);
+      });
+      m.forEach((q, c) -> System.out.println(q + ": " + c));
     }
   }
 
   private void runningCompactions(ServerContext context, boolean details) {
     CompactionCoordinatorService.Client coordinatorClient = null;
-    TExternalCompactionList running;
+    TExternalCompactionMap running;
     try {
       coordinatorClient = getCoordinatorClient(context);
       running = coordinatorClient.getRunningCompactions(TraceUtil.traceInfo(), context.rpcCreds());
@@ -173,9 +184,9 @@ public class ECAdmin implements KeywordExecutable {
           var runningCompaction = new RunningCompaction(ec);
           var addr = runningCompaction.getCompactorAddress();
           var kind = runningCompaction.getJob().kind;
-          var queue = runningCompaction.getQueueName();
+          var group = runningCompaction.getGroupName();
           var ke = KeyExtent.fromThrift(runningCompaction.getJob().extent);
-          System.out.format("%s %s %s %s TableId: %s\n", ecid, addr, kind, queue, ke.tableId());
+          System.out.format("%s %s %s %s TableId: %s\n", ecid, addr, kind, group, ke.tableId());
           if (details) {
             var runningCompactionInfo = new RunningCompactionInfo(ec);
             var status = runningCompactionInfo.status;
@@ -189,7 +200,7 @@ public class ECAdmin implements KeywordExecutable {
         }
       });
     } catch (Exception e) {
-      throw new RuntimeException("Unable to get running compactions.", e);
+      throw new IllegalStateException("Unable to get running compactions.", e);
     } finally {
       ThriftUtil.returnClient(coordinatorClient, context);
     }
@@ -200,7 +211,7 @@ public class ECAdmin implements KeywordExecutable {
     if (coordinatorHost.isEmpty()) {
       throw new IllegalStateException("Unable to find coordinator. Check that it is running.");
     }
-    HostAndPort address = coordinatorHost.get();
+    HostAndPort address = coordinatorHost.orElseThrow();
     CompactionCoordinatorService.Client coordinatorClient;
     try {
       coordinatorClient = ThriftUtil.getClient(ThriftClientTypes.COORDINATOR, address, context);
